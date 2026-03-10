@@ -207,6 +207,8 @@ scripts/run_scripts/sum2cluter.sh
 
 scripts/run_scripts/pretrain/*
 
+scripts/run_scripts/post_train/*
+
 examples/SimplerEnv/eval_scripts
 
 examples/Behavior
