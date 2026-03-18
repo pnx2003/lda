@@ -115,6 +115,17 @@ We provide training and evaluation scripts for the RoboCasa-GR1 dataset. Follow 
 
 We also provide a [demo dataset](playground/demo_data) for quick debugging and validation.
 
+You can launch training by running [this script](scripts/run_scripts/run_lerobot_datasets_LDA.sh).
+
+Make sure to update the following arguments in the script before execution:
+
+- `base_vlm`: local path to the Qwen3 checkpoint
+- `vision_encoder_path`: local path to the DINOv3 checkpoint
+- `data_root_dir`: dataset root directory
+- `data_mix`: target dataset name, defined in [data_config.py](starVLA/dataloader/gr00t_lerobot/mixtures.py)
+- `run_root_dir`: directory for saving checkpoints
+- `run_id`: name used for the current training run
+
 ### 🧪 Evaluate 
 
 In addition to closed-loop evaluation in simulation (interactive execution with environment feedback), we also provide an open-loop evaluation interface for offline assessment. Open-loop evaluation quantitatively measures model performance by comparing predicted action sequences against ground-truth demonstrations from the dataset, without environment interaction.

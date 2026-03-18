@@ -17,8 +17,8 @@ freeze_module_list='qwen_vl_interface,action_model.vision_encoder' # if you woul
 DIT_TYPE="DiT-L"
 
 llavadata="asv2_conversation_en,asv2_detailed_description_en"
-data_root_dir=/path/to/data/directory
-data_mix=data_mix_name # should be recorded in data_config.py
+data_root_dir=playground/demo_data
+data_mix=demo_data # should be recorded in data_config.py
 
 obs_horizon=1 # should be consistent with the data config, e.g., obs_horizon=1 means using the last observation to predict the next action
 state_dim=null
@@ -27,16 +27,18 @@ max_num_embodiments=1 # set to 1 for single embodiment, can be >1 for multi-embo
 num_layers=8
 use_delta_action=false # set to true if would like to train the model to predict delta eef action, which is the default setting for our method. Set to false if you want to predict absolute eef action or qpos.
 positional_embeddings=null
-
+TRAINING_TASK_WEIGHTS="[1,1,1,1]" # training task weights for 4 tasks: policy, forward_dynamics, inverse_dynamics, video_gen
 repeated_diffusion_steps=1
 
-future_obs_index=5
+future_obs_index=5 # predict the future observation at this index, should be consistent with the data config
 run_root_dir=/path/to/save/training/results # replace with your own path
 run_id=/run/id
 
 pretrained_checkpoint=null # set to null if training from scratch
 
 only_policy=false
+policy_and_video_gen=false
+only_wo_video_gen=false
 
 export WANDB_MODE=disabled
 wandb_entity=your/wandb/entity
@@ -49,8 +51,8 @@ cp $0 ${output_dir}/
 accelerate launch \
   --config_file lda/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes 8 \
-  lda/training/train_lda.py \
-  --config_yaml lda/config/training/lda_robocasa.yaml \
+  lda/training/train_LDA.py \
+  --config_yaml lda/config/training/LDA_pretrain.yaml \
   --framework.name ${Framework_name} \
   --framework.qwenvl.base_vlm ${base_vlm} \
   --framework.action_model.vision_encoder_path ${vision_encoder_path} \
@@ -60,6 +62,9 @@ accelerate launch \
   --framework.action_model.action_dim ${action_dim} \
   --framework.action_model.obs_horizon ${obs_horizon} \
   --framework.action_model.future_obs_index ${future_obs_index} \
+  --framework.action_model.only_policy ${only_policy} \
+  --framework.action_model.policy_and_video_gen ${policy_and_video_gen} \
+  --framework.action_model.only_wo_video_gen ${only_wo_video_gen} \
   --framework.action_model.diffusion_model_cfg.positional_embeddings ${positional_embeddings} \
   --datasets.vla_data.use_delta_action ${use_delta_action} \
   --datasets.vla_data.data_root_dir ${data_root_dir} \
