@@ -394,6 +394,93 @@ class FourierGr1ArmsWaistDataConfig:
         ]
         return ComposedModalityTransform(transforms=transforms)
 
+class FourierGr1ArmsWaistTwoHistoryNoActionHistoryDataConfig:
+    video_keys = ["video.ego_view"]
+    future_video_keys = [
+        "future_video.ego_view"
+    ]
+    state_keys = [
+        "state.left_arm",
+        "state.right_arm",
+        "state.left_hand",
+        "state.right_hand",
+        "state.waist",
+    ]
+    action_keys = [
+        "action.left_arm",
+        "action.right_arm",
+        "action.left_hand",
+        "action.right_hand",
+        "action.waist",
+    ]
+    language_keys = ["annotation.human.coarse_action"]
+    observation_indices = [-5, 0]
+    future_observation_indices = [16]
+    action_indices = list(range(16))
+
+
+    def modality_config(self):
+        video_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.video_keys,
+        )
+        future_video_modality = ModalityConfig(
+            delta_indices=self.future_observation_indices,
+            modality_keys=self.future_video_keys,
+        )
+        state_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.state_keys,
+        )
+        action_modality = ModalityConfig(
+            delta_indices=self.action_indices,
+            modality_keys=self.action_keys,
+        )
+        language_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.language_keys,
+        )
+        modality_configs = {
+            "video": video_modality,
+            "state": state_modality,
+            "action": action_modality,
+            "language": language_modality,
+            "future_video": future_video_modality,
+        }
+        return modality_configs
+
+    def transform(self) -> ModalityTransform:
+        transforms = [
+            # video transforms
+            # VideoToTensor(apply_to=self.video_keys),
+            # VideoCrop(apply_to=self.video_keys, scale=0.95),
+            # VideoResize(apply_to=self.video_keys, height=224, width=224, interpolation="linear"),
+            # VideoColorJitter(
+            #     apply_to=self.video_keys,
+            #     brightness=0.3,
+            #     contrast=0.4,
+            #     saturation=0.5,
+            #     hue=0.08,
+            # ),
+            # VideoToNumpy(apply_to=self.video_keys),
+            # state transforms
+            StateActionToTensor(apply_to=self.state_keys),
+            StateActionSinCosTransform(apply_to=self.state_keys),
+            # action transforms
+            StateActionToTensor(apply_to=self.action_keys),
+            StateActionTransform(
+                apply_to=self.action_keys,
+                normalization_modes={key: "min_max" for key in self.action_keys},
+            ),
+            # concat transforms
+            # ConcatTransform(
+            #     video_concat_order=self.video_keys,
+            #     state_concat_order=self.state_keys,
+            #     action_concat_order=self.action_keys,
+            # ),
+        ]
+        return ComposedModalityTransform(transforms=transforms)
+
 ###########################################################################################
 class FourierGr1EEFDataConfig:
     video_keys = ["video.ego_view"]
@@ -842,6 +929,7 @@ ROBOT_TYPE_CONFIG_MAP = {
     "fourier_gr1_arms_waist": FourierGr1ArmsWaistDataConfig(),
     "fourier_gr1_eef": FourierGr1EEFDataConfig(),
     "fourier_gr1_arms_waist_twohistory": FourierGr1ArmsWaist_twohistoryDataConfig(),
+    "fourier_gr1_arms_waist_twohistory_no_action_history": FourierGr1ArmsWaistTwoHistoryNoActionHistoryDataConfig(),
 
     "agibot_gripper": AgibotWorldDataConfig(),
     "agibot_dex": AgibotDexDataConfig(),
@@ -879,4 +967,3 @@ ROBOT_TYPE_CONFIG_MAP = {
 
     "demo_data": DemoDataConfig(),
 }
-

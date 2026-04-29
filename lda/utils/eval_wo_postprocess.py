@@ -158,7 +158,7 @@ def calc_mse_for_single_trajectory(
 
         if step_count % action_horizon == 0:
             if data_point is None:
-                data_point = dataset.get_step_data_with_transform(traj_id, step_count, processor, policy.config.framework.qwenvl.base_vlm, return_state=return_state)
+                data_point = dataset.get_step_data_with_transform(traj_id, step_count, return_state=return_state)
             print("inferencing at step: ", step_count)
             # data_point['action'][:-1, :6] = calculate_delta_eef(data_point['action'][:, :6])
             # data_point['action'][:-1, 6:12] = calculate_delta_eef(data_point['action'][:, 6:12])
@@ -227,7 +227,7 @@ def calc_mse_for_single_trajectory(
 
     states_list = []
     for step_count in range(steps):
-        data_point = dataset.get_step_data_with_transform(traj_id, step_count, processor, policy.config.framework.qwenvl.base_vlm)
+        data_point = dataset.get_step_data_with_transform(traj_id, step_count)
         state = torch.from_numpy(data_point["state"][0])
         states_list.append(state)
     states_across_time = np.array(states_list)

@@ -529,19 +529,19 @@ class FlowmatchingActionHead(nn.Module):
         return next_obs
 
     def transform_obs(self, obs, B, V, T):
-            if len(obs.shape) == 6:
-                obs = rearrange(obs, "b v t c h w -> (b v t) c h w")
-            if self.vision_encoder_type == "vjepa2":
-                obs = self.transform(obs)["pixel_values_videos"][0]
-                obs = rearrange(obs, "(b v t) c h w -> b v t c h w", b=B, v=V, t=T)
-            elif self.vision_encoder_type == "dinov3":
-                obs = torch.stack(self.transform(obs)["pixel_values"], dim=0)
-                obs = rearrange(obs, "(b v t) c h w -> b v t c h w", b=B, v=V, t=T)
-            elif self.vision_encoder_type == "vae":
-                obs = rearrange(obs, "(b v t) c h w -> b (v t) h w c", b=B, v=V, t=T)
-                obs = self.transform(obs)
-                obs = rearrange(obs, "b c (v t) h w -> b v t c h w", b=B, v=V, t=T)
-            return obs
+        if len(obs.shape) == 6:
+            obs = rearrange(obs, "b v t c h w -> (b v t) c h w")
+        if self.vision_encoder_type == "vjepa2":
+            obs = self.transform(obs)["pixel_values_videos"][0]
+            obs = rearrange(obs, "(b v t) c h w -> b v t c h w", b=B, v=V, t=T)
+        elif self.vision_encoder_type == "dinov3":
+            obs = torch.stack(self.transform(obs)["pixel_values"], dim=0)
+            obs = rearrange(obs, "(b v t) c h w -> b v t c h w", b=B, v=V, t=T)
+        elif self.vision_encoder_type == "vae":
+            obs = rearrange(obs, "(b v t) c h w -> b (v t) h w c", b=B, v=V, t=T)
+            obs = self.transform(obs)
+            obs = rearrange(obs, "b c (v t) h w -> b v t c h w", b=B, v=V, t=T)
+        return obs
 
     def to_tokens(self, obs, timestep=None):
         if self.vision_encoder_type == "dinov3":

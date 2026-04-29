@@ -169,6 +169,7 @@ ROBOT_TYPE_TO_EMBODIMENT_TAG = {
     "fourier_gr1_arms_waist": EmbodimentTag.GR1,
     "fourier_gr1_eef": EmbodimentTag.GR1,
     "fourier_gr1_arms_waist_twohistory": EmbodimentTag.GR1,
+    "fourier_gr1_arms_waist_twohistory_no_action_history": EmbodimentTag.GR1,
     "egovla": EmbodimentTag.EGOVLA,
     "galbot": EmbodimentTag.GALBOT,
     "egocentric_10k": EmbodimentTag.EGOCENTRIC_10K,

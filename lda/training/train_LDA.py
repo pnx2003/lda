@@ -1,4 +1,4 @@
-# Copyright 2025 lda community. All rights reserved.
+# Copyright 2025 starVLA  community. All rights reserved.
 # Licensed under the MIT License, Version 1.0 (the "License"); 
 # Implemented by [Jinhui YE / HKUST University] in [2025].
 
@@ -174,7 +174,6 @@ class VLATrainer(TrainerUtils):
             self.optimizer,
             self.train_dataloader,
         )
-
         self._init_wandb()
 
 
@@ -311,6 +310,7 @@ class VLATrainer(TrainerUtils):
 
     def _get_next_batch(self):
         """get next batch (automatically handle data loop)"""
+
         try:
             batch_vla = next(self.train_iter)
         except StopIteration:

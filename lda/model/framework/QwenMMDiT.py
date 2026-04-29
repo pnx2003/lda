@@ -1,4 +1,4 @@
-# Copyright 2025 lda community. All rights reserved.
+# Copyright 2025 starVLA  community. All rights reserved.
 # Licensed under the MIT License, Version 1.0 (the "License");
 # Implemented by [Junqiu YU / Fudan University] in [2025]. 
 # Design and Merged by [Jinhui YE / HKUST University] in [2025].
@@ -157,8 +157,9 @@ class Qwen_MMDiT(baseframework):
                 np.array(embodiment_ids), device=last_hidden.device, dtype=torch.int32
             )
             embodiment_ids_repeated = embodiment_ids.repeat(repeated_diffusion_steps)
+            # attention_mask_repeated = attention_mask.to(last_hidden.device, dtype=torch.bool).repeat(repeated_diffusion_steps, 1)
             attention_mask_repeated = attention_mask.to(last_hidden.device, dtype=last_hidden.dtype).repeat(repeated_diffusion_steps, 1)
-
+            
             curr_images_repeated = torch.from_numpy(curr_images).to(last_hidden.device, dtype=last_hidden.dtype).repeat(repeated_diffusion_steps, 1, 1, 1, 1)
             future_images_repeated = torch.from_numpy(future_images).to(last_hidden.device, dtype=last_hidden.dtype).repeat(repeated_diffusion_steps, 1, 1, 1, 1)
             tasks = tasks * repeated_diffusion_steps
@@ -255,6 +256,7 @@ class Qwen_MMDiT(baseframework):
         embodiment_ids = torch.from_numpy(np.array(embodiment_ids)).to(last_hidden.device, dtype=torch.int32)
         # state = examples['state'].to(last_hidden.device, dtype=last_hidden.dtype) if 'state' in examples else None
         curr_imgs = curr_imgs.to(last_hidden.device, dtype=last_hidden.dtype)
+        # attention_mask = attention_mask.to(last_hidden.device, dtype=torch.bool)
         attention_mask = attention_mask.to(last_hidden.device, dtype=last_hidden.dtype)
         # Step 4: Action Expert Forward and Loss
         with torch.autocast("cuda", dtype=torch.float32):

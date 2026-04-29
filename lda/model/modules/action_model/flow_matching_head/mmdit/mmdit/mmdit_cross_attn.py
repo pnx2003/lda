@@ -284,8 +284,8 @@ class MMDiTBlock(Module):
 
         image_tokens = add_image_residual(image_tokens)
         action_tokens = add_action_residual(action_tokens)
-        # condition attention output
 
+        # condition attention output
         image_tokens = image_tokens * image_post_attn_gamma
         action_tokens = action_tokens * action_post_attn_gamma
         
