@@ -74,7 +74,7 @@ To download only the relevant finetuning folders, you can refer [GR00T-N1.5](htt
 Or using the script download the *_1000 folders.
 
 ```bash
-python examples/Robocasa_tabletop/download_gr00t_ft_data.py
+python examples/Robocasa_tabletop/train_files/download_gr00t_ft_data.py
 ```
 
 ## 🚀 Step1: Start Training
