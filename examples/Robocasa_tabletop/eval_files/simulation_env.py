@@ -38,7 +38,7 @@ from examples.Robocasa_tabletop.eval_files.wrappers.video_recording_wrapper impo
     VideoRecordingWrapper,
 )
 
-from examples.Robocasa_tabletop.eval_files.model2robocasa_interface import PolicyWarper
+from examples.Robocasa_tabletop.eval_files.model2robocasa_interface_with_history import PolicyWarper
 
 
 @dataclass
@@ -59,8 +59,8 @@ class VideoConfig:
 class MultiStepConfig:
     """Configuration for multi-step environment settings."""
 
-    video_delta_indices: np.ndarray = field(default=np.array([0]))
-    state_delta_indices: np.ndarray = field(default=np.array([0]))
+    video_delta_indices: np.ndarray = field(default=np.array([-5,0]))
+    state_delta_indices: np.ndarray = field(default=np.array([-5,0]))
     n_action_steps: int = 16
     max_episode_steps: int = 1440
 
