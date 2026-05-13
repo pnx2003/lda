@@ -4,7 +4,8 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-2505.03233-df2a2a.svg)](https://arxiv.org/abs/2602.12215)
 [![Static Badge](https://img.shields.io/badge/Project-Page-a)](https://pku-epic.github.io/LDA/)
-[![Model](https://img.shields.io/badge/Hugging%20Face-Model-yellow)]()
+[![Pretrain Model](https://img.shields.io/badge/Hugging%20Face-Pretrain_Model-yellow)](https://huggingface.co/Wayer2/LDA-pretrain/tree/main)
+[![RoboCasa Model](https://img.shields.io/badge/Hugging%20Face-RoboCasa_Model-yellow)](https://huggingface.co/Wayer2/LDA-robocasa)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
 </div>
@@ -42,7 +43,8 @@ quality.
 ---
 
 ## Latest Updates
-- [2026-02-12] We publish LDA-1B, check our paper [here](https://arxiv.org/abs/2602.12215).
+- [2026-04-27] Our paper has been accepted by RSS 2026.
+- [2026-02-12] We publish LDA-1B, check our paper [here](https://arxiv.org/abs/2602.12215). Check our pretrained checkpoints on Hugging Face: [LDA-pretrain](https://huggingface.co/Wayer2/LDA-pretrain/tree/main) and [LDA-robocasa](https://huggingface.co/Wayer2/LDA-robocasa).
 
 
 ## 🛠 Environment Setup
@@ -140,7 +142,7 @@ bash LDA/scripts/eval_scripts/eval_lerobot_datasets_LDA.sh
 
 The following features are planned for future implementation:
 
-- [ ] Pre-trained model checkpoints.
+- [x] Pre-trained model checkpoints.
 - [ ] Pre-training data.
 - [ ] Data preprocess scripts.
 
