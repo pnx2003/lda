@@ -20,11 +20,11 @@ llavadata="asv2_conversation_en,asv2_detailed_description_en"
 data_root_dir=playground/demo_data
 data_mix=demo_data # should be recorded in data_config.py
 
-obs_horizon=1 # should be consistent with the data config, e.g., obs_horizon=1 means using the last observation to predict the next action
+obs_horizon=2 # should be consistent with the data config, e.g., obs_horizon=1 means using the last observation to predict the next action
 state_dim=null
 action_dim=138
-max_num_embodiments=1 # set to 1 for single embodiment, can be >1 for multi-embodiment co-training
-num_layers=8
+max_num_embodiments=32 # set to 1 for single embodiment, can be >1 for multi-embodiment co-training
+num_layers=16
 use_delta_action=false # set to true if would like to train the model to predict delta eef action, which is the default setting for our method. Set to false if you want to predict absolute eef action or qpos.
 positional_embeddings=null
 TRAINING_TASK_WEIGHTS="[1,1,1,1]" # training task weights for 4 tasks: policy, forward_dynamics, inverse_dynamics, video_gen
