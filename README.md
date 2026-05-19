@@ -128,7 +128,7 @@ Make sure to update the following arguments in the script before execution:
 - `run_root_dir`: directory for saving checkpoints
 - `run_id`: name used for the current training run
 
-### 🤖 在真实机器人上训练
+### 🤖 Train LDA on real robot
 
 To train LDA on a real robot dataset, prepare the dataset and update the data registry before launching training:
 
