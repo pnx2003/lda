@@ -117,7 +117,7 @@ We provide training and evaluation scripts for the RoboCasa-GR1 dataset. Follow 
 
 We also provide a [demo dataset](playground/demo_data) for quick debugging and validation.
 
-You can launch training by running [this script](scripts/run_scripts/run_lerobot_datasets_LDA.sh).
+You can launch training by running [this script](scripts/run_scripts/Robocasa/run_lerobot_datasets_LDA.sh).
 
 Make sure to update the following arguments in the script before execution:
 
@@ -127,6 +127,16 @@ Make sure to update the following arguments in the script before execution:
 - `data_mix`: target dataset name, defined in [data_config.py](starVLA/dataloader/gr00t_lerobot/mixtures.py)
 - `run_root_dir`: directory for saving checkpoints
 - `run_id`: name used for the current training run
+
+### 🤖 在真实机器人上训练
+
+To train LDA on a real robot dataset, prepare the dataset and update the data registry before launching training:
+
+1. Prepare the real robot dataset in LeRobot v2.1 format.
+2. Check whether the real robot embodiment is already registered in [embodiment_tags.py](lda/dataloader/gr00t_lerobot/embodiment_tags.py). If not, replace `NEW_EMBODIMENT` with the target robot embodiment.
+3. Add a data config for the dataset in [data_config.py](lda/dataloader/gr00t_lerobot/data_config.py), including modality key names, delta indices, normalization modes, and other dataset-specific settings. You can refer to `BaseDataConfig`, then add a dataset identifier in `ROBOT_TYPE_CONFIG_MAP`.
+4. Set the dataset path, sampling ratio, and the robot type identifier from step 3 in [mixtures.py](lda/dataloader/gr00t_lerobot/mixtures.py).
+5. Update pretrained model paths and other training arguments in [run_lerobot_datasets_LDA.sh](scripts/run_scripts/run_lerobot_datasets_LDA.sh), then run the script.
 
 ### 🧪 Evaluate 
 
