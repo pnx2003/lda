@@ -20,6 +20,7 @@ from typing import List, Literal
 import os
 from collections import defaultdict
 import numpy as np
+import torch
 from omegaconf import OmegaConf
 
 from lda.training.trainer_utils.trainer_tools import normalize_dotlist_args
@@ -42,6 +43,74 @@ NOTE: provide --model_path to load up the model checkpoint in this script,
 python scripts/eval_policy.py --plot --model-path nvidia/GR00T-N1.5-3B
 """
 
+COMPACT_ACTION_STAT_SLICES = {
+    "action.left_eef_position": slice(0, 3),
+    "action.left_eef_rotation": slice(3, 6),
+    "action.left_gripper": slice(6, 7),
+    "action.right_eef_position": slice(7, 10),
+    "action.right_eef_rotation": slice(10, 13),
+    "action.right_gripper": slice(13, 14),
+}
+
+ACTION_STAT_NAMES = ("q01", "q99", "min", "max", "mean", "std")
+
+
+def apply_checkpoint_action_stats(dataset, norm_stats):
+    """Use checkpoint action stats for eval-time action transforms.
+
+    Delta-action checkpoints save compact action stats in the checkpoint
+    directory, while the eval dataset metadata stores absolute EEF stats.
+    The model inputs and action unapply path need the checkpoint stats.
+    """
+    if not norm_stats or not hasattr(dataset, "datasets"):
+        return
+
+    patched = 0
+    for single_dataset in dataset.datasets:
+        stats_key = getattr(single_dataset, "tag", None)
+        if stats_key not in norm_stats:
+            stats_key = single_dataset._metadata.embodiment_tag.value
+        if stats_key not in norm_stats:
+            continue
+
+        action_stats = norm_stats[stats_key].get("action", {})
+        if "q01" not in action_stats or "q99" not in action_stats:
+            continue
+        if len(action_stats["q01"]) < 14:
+            continue
+
+        for transform in single_dataset.transforms.transforms:
+            normalizers = getattr(transform, "_normalizers", None)
+            if not normalizers:
+                continue
+
+            transform_patched = False
+            for action_key, stat_slice in COMPACT_ACTION_STAT_SLICES.items():
+                if action_key not in normalizers:
+                    continue
+
+                normalizer = normalizers[action_key]
+                sliced_stats = {}
+                for stat_name in ACTION_STAT_NAMES:
+                    if stat_name not in action_stats:
+                        continue
+                    stat_values = action_stats[stat_name][stat_slice]
+                    old_value = normalizer.statistics.get(stat_name)
+                    dtype = old_value.dtype if isinstance(old_value, torch.Tensor) else torch.float64
+                    normalizer.statistics[stat_name] = torch.tensor(stat_values, dtype=dtype)
+                    sliced_stats[stat_name] = stat_values
+
+                if action_key in transform.normalization_statistics:
+                    transform.normalization_statistics[action_key] = sliced_stats
+                transform_patched = True
+
+            if transform_patched:
+                patched += 1
+
+    if patched > 0:
+        print(f"Applied checkpoint action normalization stats to {patched} dataset transforms.")
+
+
 def main(config):
     np.random.seed(config.seed)
     data_cfg = config.datasets.vla_data
@@ -49,6 +118,7 @@ def main(config):
     dataset = get_vla_dataset(data_cfg, model_cfg=model_cfg, model_id=config.framework.qwenvl.base_vlm)  
     # policy: baseframework = build_framework(config)
     policy = baseframework.from_pretrained(pretrained_checkpoint = config.evaluation.model_path)
+    apply_checkpoint_action_stats(dataset, getattr(policy, "norm_stats", None))
     policy.eval()
     policy.to("cuda")
     if config.is_delta_action:

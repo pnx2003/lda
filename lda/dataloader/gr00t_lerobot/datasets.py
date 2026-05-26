@@ -936,20 +936,180 @@ class LeRobotSingleDataset(Dataset):
         
         return dict(action=action, image=images, language=language)
 
-    def get_step_data_with_transform(self, trajectory_id: int, base_index: int, return_state=True) -> dict:
+    def _calculate_delta_action(self, left_abs_position, left_abs_rotation, right_abs_position=None, right_abs_rotation=None):
+        raw_eef_left = np.concatenate([left_abs_position, left_abs_rotation], axis=1)
+        delta_eef_left = calculate_delta_eef(raw_eef_left)
+        if right_abs_position is not None:
+            raw_eef_right = np.concatenate([right_abs_position, right_abs_rotation], axis=1)
+            delta_eef_right = calculate_delta_eef(raw_eef_right)
+            return delta_eef_left, delta_eef_right
+        return delta_eef_left
+
+    def _get_next_delta_aligned_action(self, raw_data, key, history_action_indices=None):
+        if history_action_indices is not None:
+            history_data = raw_data[key][1:len(history_action_indices)]
+            pred_data = raw_data[key][len(history_action_indices)+1:]
+            raw_data[key] = np.concatenate([history_data, pred_data], axis=0)
+        else:
+            raw_data[key] = raw_data[key][1:]
+        return raw_data
+
+    def _get_delta_action_from_raw_data(self, raw_data, embodiment_tag, history_action_indices=None):
+        if 'action.left_eef_position' not in raw_data.keys():
+            return raw_data
+
+        if history_action_indices is not None:
+            history_len = len(history_action_indices)
+            history_action_left_eef_position = raw_data['action.left_eef_position'][:history_len]
+            history_action_left_eef_rotation = raw_data['action.left_eef_rotation'][:history_len]
+            if "action.right_eef_position" in raw_data.keys():
+                history_action_right_eef_position = raw_data['action.right_eef_position'][:history_len]
+                history_action_right_eef_rotation = raw_data['action.right_eef_rotation'][:history_len]
+                history_delta_eef_left, history_delta_eef_right = self._calculate_delta_action(
+                    history_action_left_eef_position,
+                    history_action_left_eef_rotation,
+                    history_action_right_eef_position,
+                    history_action_right_eef_rotation,
+                )
+            else:
+                history_delta_eef_left = self._calculate_delta_action(
+                    history_action_left_eef_position,
+                    history_action_left_eef_rotation,
+                )
+
+            pred_action_left_eef_position = raw_data['action.left_eef_position'][history_len:]
+            pred_action_left_eef_rotation = raw_data['action.left_eef_rotation'][history_len:]
+            if "action.right_eef_position" in raw_data.keys():
+                pred_action_right_eef_position = raw_data['action.right_eef_position'][history_len:]
+                pred_action_right_eef_rotation = raw_data['action.right_eef_rotation'][history_len:]
+                pred_delta_eef_left, pred_delta_eef_right = self._calculate_delta_action(
+                    pred_action_left_eef_position,
+                    pred_action_left_eef_rotation,
+                    pred_action_right_eef_position,
+                    pred_action_right_eef_rotation,
+                )
+                delta_eef_right = np.concatenate([history_delta_eef_right, pred_delta_eef_right], axis=0)
+                delta_eef_left = np.concatenate([history_delta_eef_left, pred_delta_eef_left], axis=0)
+            else:
+                pred_delta_eef_left = self._calculate_delta_action(
+                    pred_action_left_eef_position,
+                    pred_action_left_eef_rotation,
+                )
+                delta_eef_left = np.concatenate([history_delta_eef_left, pred_delta_eef_left], axis=0)
+        else:
+            if "action.right_eef_position" in raw_data.keys():
+                delta_eef_left, delta_eef_right = self._calculate_delta_action(
+                    raw_data['action.left_eef_position'],
+                    raw_data['action.left_eef_rotation'],
+                    raw_data['action.right_eef_position'],
+                    raw_data['action.right_eef_rotation'],
+                )
+            else:
+                delta_eef_left = self._calculate_delta_action(
+                    raw_data['action.left_eef_position'],
+                    raw_data['action.left_eef_rotation'],
+                )
+
+        raw_data['action.left_eef_position'] = delta_eef_left[:, :3]
+        raw_data['action.left_eef_rotation'] = delta_eef_left[:, 3:6]
+        if "action.right_eef_position" in raw_data.keys():
+            raw_data['action.right_eef_position'] = delta_eef_right[:, :3]
+            raw_data['action.right_eef_rotation'] = delta_eef_right[:, 3:6]
+
+        for action_key in ('action.left_hand', 'action.right_hand'):
+            if action_key in raw_data.keys():
+                raw_data = self._get_next_delta_aligned_action(raw_data, action_key, history_action_indices)
+        if 'action.left_gripper' in raw_data.keys():
+            if embodiment_tag == 0:
+                raw_data['action.left_gripper'] = 1 - raw_data['action.left_gripper']
+                if "action.right_gripper" in raw_data.keys():
+                    raw_data['action.right_gripper'] = 1 - raw_data['action.right_gripper']
+            raw_data = self._get_next_delta_aligned_action(raw_data, 'action.left_gripper', history_action_indices)
+            if "action.right_gripper" in raw_data.keys():
+                raw_data = self._get_next_delta_aligned_action(raw_data, 'action.right_gripper', history_action_indices)
+        for action_key in ('action.left_mano_hand', 'action.right_mano_hand'):
+            if action_key in raw_data.keys():
+                raw_data = self._get_next_delta_aligned_action(raw_data, action_key, history_action_indices)
+        return raw_data
+
+    def _to_numpy(self, value):
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu().numpy()
+        return value
+
+    def get_step_data_with_transform(self, trajectory_id: int, base_index: int, *args, return_state=True, action_dim=None) -> dict:
         raw_data = self.get_step_data(trajectory_id, base_index)
         embodiment_tag = EMBODIMENT_TAG_MAPPING[self._metadata.embodiment_tag.value]
-    
+        dataset_no_mano = embodiment_tag == 11 or embodiment_tag == 17
+        dataset_single_arm = embodiment_tag == 4 or embodiment_tag == 9
+
+        raw_history_len = len(self.history_action_indices) if self.history_action_indices is not None else 0
+        history_len = raw_history_len
         action = []
         for action_key in self.modality_keys["action"]:
             action.append(raw_data[action_key])
         action = np.concatenate(action, axis=1)
+        if raw_history_len > 0:
+            action = action[raw_history_len:]
 
-        data = self.transforms(raw_data)
+        data_for_transform = raw_data
+        use_delta_action = False
+        if self.data_cfg is not None:
+            use_delta_action = self.data_cfg.get("use_delta_action", False) not in ["False", False]
+        has_delta_eef_action = use_delta_action and 'action.left_eef_position' in raw_data
+        if has_delta_eef_action:
+            data_for_transform = {
+                key: value.copy() if isinstance(value, np.ndarray) else value
+                for key, value in raw_data.items()
+            }
+            data_for_transform = self._get_delta_action_from_raw_data(
+                data_for_transform,
+                embodiment_tag,
+                self.history_action_indices,
+            )
+            if self.history_action_indices is not None:
+                history_len = len(self.history_action_indices) - 1
+
+        data = self.transforms(data_for_transform)
+
+        history_action = None
+        if self.history_action_indices is not None:
+            history_action = []
+            history_action_mask = []
+            for action_key in self.modality_keys["action"]:
+                padded_history_action, history_mask = pad_action_state_with_key(
+                    data[action_key][:history_len],
+                    action_key,
+                    dataset_single_arm,
+                )
+                if dataset_no_mano and "eef_rotation" in action_key:
+                    padded_history_action = np.concatenate(
+                        [padded_history_action, np.zeros((padded_history_action.shape[0], 63))],
+                        axis=1,
+                    )
+                    history_mask = np.concatenate(
+                        [history_mask, np.zeros((history_mask.shape[0], 63), dtype=bool)],
+                        axis=1,
+                    )
+                history_action.append(padded_history_action)
+                history_action_mask.append(history_mask)
+            history_action = np.concatenate(history_action, axis=1)
+            history_action_mask = np.concatenate(history_action_mask, axis=1)
+            history_action = history_action.astype(np.float16)
+            if action_dim is None and self.data_cfg is not None:
+                action_dim = self.data_cfg.get("action_dim", None)
+            if action_dim is None:
+                action_dim = getattr(self, "action_dim", None)
+            if action_dim is not None:
+                history_action, history_action_mask = pad_action_state_to_max_length(
+                    history_action,
+                    history_action_mask,
+                    action_dim,
+                )
 
         state = []
         for state_key in self.modality_keys["state"]:
-            state.append(raw_data[state_key])
+            state.append(data[state_key])
         state = np.concatenate(state, axis=1)
         # Process all video keys dynamically
         images = []
@@ -984,10 +1144,10 @@ class LeRobotSingleDataset(Dataset):
             intrinsic = None
             extrinsic = None
         if return_state:    
-            return dict(action=action, state=state,image=images, future_image=future_images, 
+            return dict(action=action, history_action=history_action, state=state,image=images, future_image=future_images, 
                         embodiment_id=embodiment_tag, lang=language, intrinsic=intrinsic, extrinsic=extrinsic)
         else:
-            return dict(action=action, image=images, future_image=future_images, 
+            return dict(action=action, history_action=history_action, image=images, future_image=future_images, 
                         embodiment_id=embodiment_tag, lang=language, intrinsic=intrinsic, extrinsic=extrinsic)
 
     def get_step_data(self, trajectory_id: int, base_index: int) -> dict:
@@ -1773,6 +1933,7 @@ class LeRobotMixtureDataset(Dataset):
             if len(dataset) == 0:
                 print(f"Warning: Skipping empty dataset {dataset.dataset_name}")
                 continue
+            dataset.action_dim = action_dim
             datasets.append(dataset)
             dataset_sampling_weights.append(weight)
         
