@@ -70,7 +70,7 @@ datasets:
 
   vla_data:
     dataset_py: lerobot_datasets
-    data_root_dir: /mnt/home/liukai/code/LDA/playground/demo_data
+    data_root_dir: ./playground/demo_data
     data_mix: demo_data
     action_type: delta_ee
     CoT_prompt: "Your task is {instruction}. To identify the key objects for your task. Locate their bounding boxes in [x1,y1,x2,y2] format."

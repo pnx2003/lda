@@ -441,7 +441,7 @@ class FlowmatchingActionHead(nn.Module):
         self.full_config = full_config
         action_model_type = config.action_model_type
         action_model_cfg = DiTConfig[action_model_type]
-        
+
         self.input_embedding_dim = action_model_cfg["input_embedding_dim"]
         diffusion_model_cfg = config.diffusion_model_cfg
         diffusion_model_cfg = {**action_model_cfg, **diffusion_model_cfg}
@@ -454,6 +454,9 @@ class FlowmatchingActionHead(nn.Module):
         self.vision_encoder_type = config.vision_encoder_type
         self.vision_encoder_size = config.vision_encoder_size
         self.num_views = config.num_views
+
+        # Video prompt configuration
+        self.max_prompt_tokens = getattr(config, "max_prompt_tokens", 512)
 
         self.cross_attention_dim = config.diffusion_model_cfg['cross_attention_dim']
 
@@ -482,7 +485,7 @@ class FlowmatchingActionHead(nn.Module):
             embed_dim=self.inner_dim
         )
         self.use_img_denoise = config.use_img_denoise
-        # add vision encoder 
+        # add vision encoder
         if self.use_img_denoise:
             assert self.vision_encoder_type is not None, "Vision encoder type is not set"
             if self.vision_encoder_type == "dinov3":
@@ -633,7 +636,7 @@ class FlowmatchingActionHead(nn.Module):
             if self.vision_encoder_type == "vjepa2":
                 obs = obs.reshape(*obs.shape[:-2], -1)
             local_tokens = self.obs_patchifier(
-                obs[..., -self.patch_len:].reshape(*obs.shape[:-1], *self.orig_patch_shape), 
+                obs[..., -self.patch_len:].reshape(*obs.shape[:-1], *self.orig_patch_shape),
                 timestep=timestep,
             )
             glob_tokens = self.obs_patchifier.proj_glob(
@@ -645,20 +648,88 @@ class FlowmatchingActionHead(nn.Module):
                 return self.obs_patchifier(obs.reshape(*obs_shape, *self.orig_patch_shape))
             return self.obs_patchifier(obs.reshape(*obs_shape, *self.orig_patch_shape), timestep=timestep)
 
+    def encode_support_prompt(self, support_imgs: torch.Tensor) -> torch.Tensor:
+        """
+        support_imgs:
+            [B, K, T, V, C, H, W]
+
+        return:
+            support_tokens: [B, N_prompt, D]
+        """
+        # CPU-side asserts for early error detection
+        assert support_imgs.dim() == 7, f"support_imgs should be 7D, got shape {support_imgs.shape}"
+
+        B, K, T, V, C, H, W = support_imgs.shape
+
+        assert C == 3, f"support_imgs channel should be 3, got {C}"
+        assert H == 224 and W == 224, f"support image size should be 224x224, got {H}x{W}"
+        assert K > 0 and T > 0 and V > 0, f"K, T, V should be positive, got K={K}, T={T}, V={V}"
+
+        # 关键修复：不要把 K*T*V 当成 view。
+        # 把 K*T 合并到 batch 维度，V 保持真实 camera view 数。
+        # [B, K, T, V, C, H, W] -> [B*K*T, V, C, H, W]
+        x = support_imgs.reshape(B * K * T, V, C, H, W)
+
+        # LDA 原 obs path 通常期望 [B, V, T_obs, C, H, W]
+        # 这里每个 support frame 只有一个时间步，所以 T_obs = 1。
+        x = x.unsqueeze(2)  # [B*K*T, V, 1, C, H, W]
+
+        B2, V2, T2 = x.shape[:3]
+
+        # 复用原来的 obs transform + DINO/world encoder
+        x = self.transform_obs(x, B2, V2, T2)
+        x = self.image_encoder(x)
+
+        # 统一整理成 [B, K*T, N_per_frame, D] 再展平
+        if x.dim() == 3:
+            # x 可能是 [B*K*T, N, D] 或 [B*K*T*V, N, D]
+            if x.shape[0] == B * K * T:
+                # [B*K*T, N, D] -> [B, K*T, N, D] -> [B, K*T*N, D]
+                x = x.reshape(B, K * T, x.shape[-2], x.shape[-1])
+                x = x.reshape(B, -1, x.shape[-1])
+            elif x.shape[0] == B * K * T * V:
+                # [B*K*T*V, N, D] -> [B, K*T*V, N, D] -> [B, K*T*V*N, D]
+                x = x.reshape(B, K * T * V, x.shape[-2], x.shape[-1])
+                x = x.reshape(B, -1, x.shape[-1])
+            else:
+                raise RuntimeError(
+                    f"Unexpected image_encoder output shape for support prompt: {x.shape}, "
+                    f"expected batch dim to be {B * K * T} or {B * K * T * V}"
+                )
+        else:
+            x = x.reshape(B, -1, x.shape[-1])
+
+        # 控制 prompt token 长度，防止显存爆
+        max_prompt_tokens = self.max_prompt_tokens
+
+        if x.shape[1] > max_prompt_tokens:
+            ids = torch.linspace(
+                0,
+                x.shape[1] - 1,
+                steps=max_prompt_tokens,
+                device=x.device,
+            ).long()
+            x = x[:, ids]
+
+        return x
+
     def forward(
-        self, 
-        vl_embs: torch.Tensor, 
-        actions: torch.Tensor, 
-        # action_mask: torch.Tensor, 
+        self,
+        vl_embs: torch.Tensor,
+        actions: torch.Tensor,
+        action_mask: torch.Tensor = None,
         history_actions: torch.Tensor = None,
-        state: torch.Tensor = None, 
-        future_imgs: torch.Tensor = None, 
-        curr_imgs: torch.Tensor = None, 
-        embodiment_id: torch.Tensor = None, 
+        state: torch.Tensor = None,
+        future_imgs: torch.Tensor = None,
+        curr_imgs: torch.Tensor = None,
+        support_imgs: torch.Tensor = None,
+        embodiment_id: torch.Tensor = None,
         encoder_attention_mask = None):
         """
         vl_embs: shape (B, seq_length, feature_dim)
         actions: shape (B, future_action_window_size, D_action)
+        action_mask: shape (B, future_action_window_size, D_action) - mask for valid action tokens
+        support_imgs: shape (B, K, T, V, C, H, W) - support videos for in-context learning
         """
         device = vl_embs.device
         # embed state
@@ -675,7 +746,7 @@ class FlowmatchingActionHead(nn.Module):
         action_t_discretized = (action_t[:, 0, 0] * self.num_timestep_buckets).long()
         action_features = self.action_encoder(noisy_trajectory, action_t_discretized)
 
-        # Embed noised future obs, need to be refined, current only take single img 
+        # Embed noised future obs, need to be refined, current only take single img
         obs_t_discretized = None
         curr_obs = None
         if self.use_img_denoise:
@@ -720,7 +791,39 @@ class FlowmatchingActionHead(nn.Module):
                 obs_t_discretized = (obs_t[:, 0, 0, 0, 0] * self.num_timestep_buckets).long()
             else:
                 obs_t_discretized = (obs_t[:, 0, 0, 0, 0, 0] * self.num_timestep_buckets).long()
-        
+
+        # 处理 support prompt tokens
+        if support_imgs is not None:
+            support_tokens = self.encode_support_prompt(support_imgs)
+
+            # Validate dimensions before concatenation
+            assert support_tokens.shape[0] == vl_embs.shape[0], (
+                f"Batch size mismatch: support_tokens.shape[0]={support_tokens.shape[0]} vs vl_embs.shape[0]={vl_embs.shape[0]}"
+            )
+            assert support_tokens.shape[-1] == vl_embs.shape[-1], (
+                f"Hidden dim mismatch: support_tokens.shape[-1]={support_tokens.shape[-1]} vs vl_embs.shape[-1]={vl_embs.shape[-1]}"
+            )
+
+            # support tokens 角色等价于额外 context tokens
+            vl_embs = torch.cat([vl_embs, support_tokens], dim=1)
+
+            if encoder_attention_mask is not None:
+                support_mask = torch.ones(
+                    support_tokens.shape[:2],
+                    dtype=encoder_attention_mask.dtype,
+                    device=encoder_attention_mask.device,
+                )
+
+                encoder_attention_mask = torch.cat(
+                    [encoder_attention_mask, support_mask],
+                    dim=1,
+                )
+
+                # Validate mask and embeddings alignment
+                assert encoder_attention_mask.shape[1] == vl_embs.shape[1], (
+                    f"Mask/emb length mismatch: encoder_attention_mask.shape[1]={encoder_attention_mask.shape[1]} vs vl_embs.shape[1]={vl_embs.shape[1]}"
+                )
+
         # state and action embedding along sequence dimension.
         future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
         # Maybe add position embedding.
@@ -730,7 +833,7 @@ class FlowmatchingActionHead(nn.Module):
             else:
                 total_len = action_features.shape[1]
             pos_ids = torch.arange(total_len, dtype=torch.long, device=device)
-            pos_embs = self.position_embedding(pos_ids).unsqueeze(0) 
+            pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
 
         # Join VLM features with state and action embedding along sequence dimension.
         if self.use_img_denoise:
@@ -765,10 +868,14 @@ class FlowmatchingActionHead(nn.Module):
             pred_actions = model_output[:, -actions.shape[1] :]
         pred_actions = self.action_decoder(pred_actions)
         # Slice out only the action portion of pred and target.
-        # action_loss = ((pred_actions - velocity) ** 2).mean()
-        action_loss = F.mse_loss(pred_actions, velocity)
+        # action_loss: 使用 action_mask 做 masked loss，避免 padding 干扰训练信号
+        if action_mask is not None:
+            action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
+            action_loss = action_loss.sum() / (action_mask.sum() + 1e-8)
+        else:
+            action_loss = F.mse_loss(pred_actions, velocity)
         if self.use_img_denoise:
-            obs_loss = F.mse_loss(next_obs_noise_pred, obs_velocity)   
+            obs_loss = F.mse_loss(next_obs_noise_pred, obs_velocity)
             loss = action_loss +  obs_loss
         else:
             loss = action_loss
@@ -777,16 +884,17 @@ class FlowmatchingActionHead(nn.Module):
             "action_loss": action_loss.detach(),
             "dynamics_loss": obs_loss.detach() if self.use_img_denoise else 0,
         }
- 
+
         return BatchFeature(data=output_dict)
 
     @torch.no_grad()
     def predict_action(
-        self, 
-        vl_embs: torch.Tensor, 
-        state: torch.Tensor = None, 
-        curr_imgs: torch.Tensor = None, 
-        embodiment_id: torch.Tensor = None, 
+        self,
+        vl_embs: torch.Tensor,
+        state: torch.Tensor = None,
+        curr_imgs: torch.Tensor = None,
+        support_imgs: torch.Tensor = None,
+        embodiment_id: torch.Tensor = None,
         encoder_attention_mask=None) -> torch.Tensor:
         # Set initial actions as the sampled noise.
         batch_size = vl_embs.shape[0]
@@ -839,6 +947,39 @@ class FlowmatchingActionHead(nn.Module):
             curr_obs = None
             next_obs_sample = None
             obs_shape = None
+
+        # 处理 support prompt tokens
+        if support_imgs is not None:
+            support_tokens = self.encode_support_prompt(support_imgs)
+
+            # Validate dimensions before concatenation
+            assert support_tokens.shape[0] == vl_embs.shape[0], (
+                f"Batch size mismatch: support_tokens.shape[0]={support_tokens.shape[0]} vs vl_embs.shape[0]={vl_embs.shape[0]}"
+            )
+            assert support_tokens.shape[-1] == vl_embs.shape[-1], (
+                f"Hidden dim mismatch: support_tokens.shape[-1]={support_tokens.shape[-1]} vs vl_embs.shape[-1]={vl_embs.shape[-1]}"
+            )
+
+            # support tokens 角色等价于额外 context tokens
+            vl_embs = torch.cat([vl_embs, support_tokens], dim=1)
+
+            if encoder_attention_mask is not None:
+                support_mask = torch.ones(
+                    support_tokens.shape[:2],
+                    dtype=encoder_attention_mask.dtype,
+                    device=encoder_attention_mask.device,
+                )
+
+                encoder_attention_mask = torch.cat(
+                    [encoder_attention_mask, support_mask],
+                    dim=1,
+                )
+
+                # Validate mask and embeddings alignment
+                assert encoder_attention_mask.shape[1] == vl_embs.shape[1], (
+                    f"Mask/emb length mismatch: encoder_attention_mask.shape[1]={encoder_attention_mask.shape[1]} vs vl_embs.shape[1]={vl_embs.shape[1]}"
+                )
+
         num_steps = self.num_inference_timesteps
         dt = 1.0 / num_steps
         # Run denoising steps.

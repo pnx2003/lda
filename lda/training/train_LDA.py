@@ -409,6 +409,14 @@ class VLATrainer(TrainerUtils):
                 if isinstance(normalized_actions, torch.Tensor):
                     normalized_actions = normalized_actions.detach().cpu().numpy()
                 actions = np.array(actions)  # convert actions to numpy.ndarray
+                # Align ground-truth chunk length with predicted chunk length.
+                # The dataloader may return extra timesteps (e.g. 17 when
+                # action_horizon=16) for configs with history_action_indices.
+                # The model's forward() uses actions[:, -(future+1):, :] to
+                # slice; apply the same logic here.
+                if actions.shape[1] != normalized_actions.shape[1]:
+                    chunk_len = normalized_actions.shape[1]
+                    actions = actions[:, -chunk_len:, :]
                 # B, Chunk, dim = actions.shape
                 num_pots = np.prod(actions.shape)
                 # Compute the metric score
@@ -432,9 +440,15 @@ class VLATrainer(TrainerUtils):
 
     def _train_step(self, batch_vla, batch_vlm=None):
         """execute single training step"""
+        output_dict = None
         try:
             with self.accelerator.accumulate(self.model):
                 self.optimizer.zero_grad()
+
+                # Skip if batch is None (can happen with Accelerate gradient accumulation)
+                if batch_vla is None:
+                    logger.warning("batch_vla is None, skipping step")
+                    return {"action_dit_loss": 0.0}
 
                 # VLA task forward propagation
                 with torch.autocast("cuda", dtype=torch.bfloat16):
@@ -466,7 +480,8 @@ class VLATrainer(TrainerUtils):
                     "action_dit_loss": action_loss.cpu().item(),
                 }
         finally:
-            del output_dict
+            if output_dict is not None:
+                del output_dict
 
     def _finalize_training(self):
         """training end processing"""

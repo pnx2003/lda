@@ -328,6 +328,12 @@ class FlowmatchingActionHeadConfig(PretrainedConfig):
     only_wo_video_gen: bool = field(
         default=False, metadata={"help": "only Not train video gen task."}
     )
+    use_video_prompt: bool = field(
+        default=False, metadata={"help": "Whether to use video prompt for in-context learning."}
+    )
+    max_prompt_tokens: int = field(
+        default=512, metadata={"help": "Max number of prompt tokens from support videos."}
+    )
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -366,6 +372,9 @@ class FlowmatchingActionHead(nn.Module):
         self.vision_encoder_size = config.vision_encoder_size
         self.obs_loss_weight = config.obs_loss_weight
         self.num_views = config.num_views
+
+        # Video prompt configuration
+        self.max_prompt_tokens = getattr(config, "max_prompt_tokens", 512)
 
         self.cross_attention_dim = config.diffusion_model_cfg['cross_attention_dim']
 
@@ -475,6 +484,13 @@ class FlowmatchingActionHead(nn.Module):
             self.obs_projector = nn.Linear(self.hidden_size, num_chans)
             self.obs_len = self.orig_patch_shape[0] * self.orig_patch_shape[1] * self.num_views
 
+        # Video prompt projector: dinov3 features → vl_embs dimension (cross_attention_dim)
+        # support tokens must match vl_embs dim for concatenation in _concat_support_to_vl_embs
+        if getattr(config, "use_video_prompt", False):
+            self.support_prompt_projector = nn.Linear(num_chans, self.cross_attention_dim)
+        else:
+            self.support_prompt_projector = None
+
         # register tokens
         self.register_tokens = nn.Embedding(config.num_target_vision_tokens, self.input_embedding_dim)
         nn.init.normal_(self.register_tokens.weight, mean=0.0, std=0.02)
@@ -568,8 +584,119 @@ class FlowmatchingActionHead(nn.Module):
             pred_next_obs = self.obs_patchifier.unpatchify(image_tokens[-len(obs_indices):, -(self.obs_len + self.glob_len):])[:, :, :, 1:, :, :]
         else:
             pred_next_obs = self.obs_projector(image_tokens)
-            pred_next_obs = pred_next_obs[-len(obs_indices):, -(self.obs_len + self.glob_len):]
+            # Each view's dinov3 output carries `glob_len` global tokens (cls +
+            # register), so the full per-sample obs token count is
+            #   num_obs_tokens = num_views * (patches + glob_len)
+            #                  = obs_len + glob_len * num_views
+            # (obs_len already = num_views * patches). The old slice
+            # `-(obs_len + glob_len)` only accounted for one set of glob tokens,
+            # which under-counts by glob_len*(num_views-1) and misaligns token
+            # positions when num_views > 1 (e.g. Libero num_views=2 -> 397 vs 402).
+            # With num_views=1 (Robocasa) this reduces to the old expression.
+            pred_next_obs = pred_next_obs[-len(obs_indices):, -(self.obs_len + self.glob_len * self.num_views):]
         return pred_next_obs
+
+    def encode_support_prompt(self, support_imgs: torch.Tensor) -> torch.Tensor:
+        """
+        Encode support demo images into prompt tokens for in-context learning.
+
+        support_imgs: [B, K, T, V, C, H, W]
+        return: support_tokens [B, N_prompt, D]
+        """
+        assert support_imgs.dim() == 7, f"support_imgs should be 7D, got shape {support_imgs.shape}"
+
+        B, K, T, V, C, H, W = support_imgs.shape
+
+        assert C == 3, f"support_imgs channel should be 3, got {C}"
+        assert H == 224 and W == 224, f"support image size should be 224x224, got {H}x{W}"
+        assert K > 0 and T > 0 and V > 0, f"K, T, V should be positive, got K={K}, T={T}, V={V}"
+
+        # 把 K*T 合并到 batch 维度，V 保持真实 camera view 数。
+        # [B, K, T, V, C, H, W] -> [B*K*T, V, C, H, W]
+        x = support_imgs.reshape(B * K * T, V, C, H, W)
+
+        # LDA obs path 期望 [B, V, T_obs, C, H, W]，每个 support frame 只有1个时间步
+        x = x.unsqueeze(2)  # [B*K*T, V, 1, C, H, W]
+
+        B2, V2, T2 = x.shape[:3]
+
+        # 复用原来的 obs transform + vision encoder
+        x = self.transform_obs(x, B2, V2, T2)
+        x = self.encode_future_img(x)
+
+        # 整理回 [B, N_prompt, D]
+        if self.vision_encoder_type == "dinov3":
+            # encode_future_img 输出: (B*K*T*V, N, D)
+            x = rearrange(x, "(b kt v) n c -> b (kt v n) c", b=B, kt=K*T)
+        elif self.vision_encoder_type == "vjepa2":
+            x = rearrange(x, "(b kt v) t h w c -> b (kt v t h w) c", b=B, kt=K*T)
+        elif self.vision_encoder_type == "vae":
+            x = rearrange(x, "(b kt v) c t h w -> b (kt v c t h w)", b=B, kt=K*T)
+            if x.dim() == 2:
+                # vae: no token dim, just feature vector -> [B, 1, D]
+                x = x.unsqueeze(1)
+        else:
+            x = x.reshape(B, -1, x.shape[-1])
+
+        # 投影到与 vl_embs 相同的维度 (cross_attention_dim)
+        # vl_embs comes from Qwen VL with dim=cross_attention_dim (e.g. 2560),
+        # so support tokens must also be in that dim for concatenation.
+        if x.shape[-1] != self.cross_attention_dim:
+            assert self.support_prompt_projector is not None, (
+                f"support_prompt_projector not initialized but needed: "
+                f"x.shape[-1]={x.shape[-1]} != cross_attention_dim={self.cross_attention_dim}. "
+                f"Set use_video_prompt=True in config."
+            )
+            x = self.support_prompt_projector(x)
+
+        # 控制 prompt token 长度，防止显存爆
+        max_prompt_tokens = self.max_prompt_tokens
+
+        if x.shape[1] > max_prompt_tokens:
+            ids = torch.linspace(
+                0,
+                x.shape[1] - 1,
+                steps=max_prompt_tokens,
+                device=x.device,
+            ).long()
+            x = x[:, ids]
+
+        return x
+
+    def _concat_support_to_vl_embs(self, vl_embs, support_imgs, encoder_attention_mask):
+        """
+        Encode support images and concatenate to vl_embs + attention_mask.
+
+        Returns:
+            vl_embs: updated with support tokens appended
+            encoder_attention_mask: updated with support mask appended (or None)
+        """
+        if support_imgs is None:
+            return vl_embs, encoder_attention_mask
+
+        support_tokens = self.encode_support_prompt(support_imgs)
+
+        assert support_tokens.shape[0] == vl_embs.shape[0], (
+            f"Batch size mismatch: support_tokens.shape[0]={support_tokens.shape[0]} vs vl_embs.shape[0]={vl_embs.shape[0]}"
+        )
+        assert support_tokens.shape[-1] == vl_embs.shape[-1], (
+            f"Hidden dim mismatch: support_tokens.shape[-1]={support_tokens.shape[-1]} vs vl_embs.shape[-1]={vl_embs.shape[-1]}"
+        )
+
+        vl_embs = torch.cat([vl_embs, support_tokens], dim=1)
+
+        if encoder_attention_mask is not None:
+            support_mask = torch.ones(
+                support_tokens.shape[:2],
+                dtype=encoder_attention_mask.dtype,
+                device=encoder_attention_mask.device,
+            )
+            encoder_attention_mask = torch.cat(
+                [encoder_attention_mask, support_mask],
+                dim=1,
+            )
+
+        return vl_embs, encoder_attention_mask
 
     def forward(
         self,
@@ -581,7 +708,8 @@ class FlowmatchingActionHead(nn.Module):
         future_imgs: torch.Tensor = None,
         curr_imgs: torch.Tensor = None,
         embodiment_id: torch.Tensor = None,
-        assigned_tasks: List[str] = None,  
+        assigned_tasks: List[str] = None,
+        support_imgs: torch.Tensor = None,
         encoder_attention_mask: torch.Tensor = None,
     ):
         """
@@ -595,6 +723,7 @@ class FlowmatchingActionHead(nn.Module):
             curr_imgs: (B, V*T, C, H, W)
             embodiment_id: (B,)
             assigned_tasks: List[str] of length B, e.g. ["policy", "video_gen", ...]
+            support_imgs: (B, K, T, V, C, H, W) - support videos for in-context learning
         """
         device = vl_embs.device
         B = vl_embs.shape[0]
@@ -768,6 +897,15 @@ class FlowmatchingActionHead(nn.Module):
             state_features = state_features.index_select(0, ordered_indices_t)
         if history_actions is not None:
             history_action_features = history_action_features.index_select(0, ordered_indices_t)
+        # Reorder support_imgs if present
+        if support_imgs is not None:
+            support_imgs = support_imgs.index_select(0, ordered_indices_t)
+
+        # 处理 support prompt tokens: 拼接到 vl_embs
+        vl_embs, encoder_attention_mask = self._concat_support_to_vl_embs(
+            vl_embs, support_imgs, encoder_attention_mask
+        )
+
         # === 6. 构建完整输入序列 ===
         register_tokens = self.register_tokens.weight.unsqueeze(0).expand(B, -1, -1)
 
@@ -848,6 +986,7 @@ class FlowmatchingActionHead(nn.Module):
         history_actions: torch.Tensor = None,
         curr_imgs: torch.Tensor = None,
         embodiment_id: torch.Tensor = None,
+        support_imgs: torch.Tensor = None,
         attention_mask: torch.Tensor = None,
     ) -> torch.Tensor:
         """
@@ -894,6 +1033,11 @@ class FlowmatchingActionHead(nn.Module):
                 history_action_features = self.action_encoder(history_actions, history_t_discretized)
         # === 4. Task embedding: only "policy" during inference ===
         task_embedding = self.policy_embedding.unsqueeze(0).expand(B, -1)  # (B, D)
+
+        # === 4.1 处理 support prompt tokens ===
+        vl_embs, attention_mask = self._concat_support_to_vl_embs(
+            vl_embs, support_imgs, attention_mask
+        )
 
         # === 5. Denoising loop ===
         num_steps = self.num_inference_timesteps
@@ -968,6 +1112,7 @@ class FlowmatchingActionHead(nn.Module):
         history_actions: torch.Tensor = None,
         curr_imgs: torch.Tensor = None,
         embodiment_id: torch.Tensor = None,
+        support_imgs: torch.Tensor = None,
         attention_mask: torch.Tensor = None,
     ) -> torch.Tensor:
         """
@@ -1014,6 +1159,11 @@ class FlowmatchingActionHead(nn.Module):
                 history_action_features = self.action_encoder(history_actions, history_t_discretized)
         # === 4. Task embedding: only "video gen" during inference ===
         task_embedding = self.vg_embedding.unsqueeze(0).expand(B, -1)  # (B, D)
+
+        # === 4.1 处理 support prompt tokens ===
+        vl_embs, attention_mask = self._concat_support_to_vl_embs(
+            vl_embs, support_imgs, attention_mask
+        )
 
         # === 5. Denoising loop ===
         num_steps = self.num_inference_timesteps

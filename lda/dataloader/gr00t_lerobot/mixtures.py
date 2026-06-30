@@ -65,7 +65,9 @@ DATASET_NAMED_MIXTURES = {
         ("gr1_unified.PosttrainPnPNovelFromTrayToTieredbasketSplitA_GR1ArmsAndWaistFourierHands_1000", 1.0, "fourier_gr1_arms_waist"),
         ("gr1_unified.PosttrainPnPNovelFromTrayToTieredshelfSplitA_GR1ArmsAndWaistFourierHands_1000", 1.0, "fourier_gr1_arms_waist"),
     ],
-
+    "my_video_prompt_train": [
+        ("your_dataset_name", 1.0, "intern_franka_video_prompt"),
+    ],
     "BEHAVIOR_challenge": [
         ("BEHAVIOR_challenge", 1.0, "R1Pro"),
     ],
@@ -100,6 +102,75 @@ DATASET_NAMED_MIXTURES = {
 
     "demo_data": [
         ("sim_pick_place", 1.0, "demo_data"),
+    ],
+
+    # Video prompt mixtures - 数据路径不变，只换 robot type
+    "demo_data_video_prompt": [
+        ("sim_pick_place", 1.0, "demo_video_prompt"),
+    ],
+
+    # Droid dataset - single-arm Franka
+    "droid_video_prompt": [
+        ("droid_dataset", 1.0, "droid_franka_video_prompt"),
+    ],
+
+    # Droid tiny subset for testing (10 episodes)
+    "droid_tiny_video_prompt": [
+        ("droid_dataset_tiny", 1.0, "droid_franka_video_prompt"),
+    ],
+
+    # Libero mujoco - single-arm Franka, 4 suites, video prompt context
+    "libero_video_prompt": [
+        ("libero_mujoco3.3.2/libero_spatial_no_noops_1.0.0_lerobot", 1.0, "libero_franka_video_prompt"),
+        ("libero_mujoco3.3.2/libero_object_no_noops_1.0.0_lerobot", 1.0, "libero_franka_video_prompt"),
+        ("libero_mujoco3.3.2/libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka_video_prompt"),
+        ("libero_mujoco3.3.2/libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka_video_prompt"),
+    ],
+
+    # Libero mujoco - single-arm Franka, 4 suites, normal training (no video prompt).
+    # Uses the plain "libero_franka" data config -> LeRobotSingleDataset.
+    "libero": [
+        ("libero_mujoco3.3.2/libero_spatial_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
+        ("libero_mujoco3.3.2/libero_object_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
+        ("libero_mujoco3.3.2/libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
+        ("libero_mujoco3.3.2/libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
+    ],
+
+    # Libero single suite variants (normal, no video prompt)
+    "libero_spatial": [
+        ("libero_mujoco3.3.2/libero_spatial_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
+    ],
+    "libero_object": [
+        ("libero_mujoco3.3.2/libero_object_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
+    ],
+    "libero_goal": [
+        ("libero_mujoco3.3.2/libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
+    ],
+    "libero_10": [
+        ("libero_mujoco3.3.2/libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
+    ],
+
+    # Libero single suite variants (video prompt)
+    "libero_spatial_video_prompt": [
+        ("libero_mujoco3.3.2/libero_spatial_no_noops_1.0.0_lerobot", 1.0, "libero_franka_video_prompt"),
+    ],
+    "libero_object_video_prompt": [
+        ("libero_mujoco3.3.2/libero_object_no_noops_1.0.0_lerobot", 1.0, "libero_franka_video_prompt"),
+    ],
+    "libero_goal_video_prompt": [
+        ("libero_mujoco3.3.2/libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka_video_prompt"),
+    ],
+    "libero_10_video_prompt": [
+        ("libero_mujoco3.3.2/libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka_video_prompt"),
+    ],
+
+    "intern_franka_video_prompt": [
+        ("InternData-A1/sim/articulation_tasks/franka", 1.0, "intern_franka_video_prompt"),
+        ("InternData-A1/sim/basic_tasks/franka", 1.0, "intern_franka_video_prompt"),
+        ("InternData-A1/sim/long_horizon_tasks/franka", 1.0, "intern_franka_video_prompt"),
+        ("InternData-A1/sim/pick_and_place_tasks/franka", 1.0, "intern_franka_video_prompt"),
+        ("InternData-A1/sim_updated/basic_tasks/franka", 1.0, "intern_franka_video_prompt"),
+        ("InternData-A1/sim_updated/articulation_tasks/franka", 1.0, "intern_franka_video_prompt"),
     ],
 
     "all_dataset":[
@@ -199,3 +270,84 @@ DATASET_NAMED_MIXTURES = {
     ]
 
 }
+
+
+# ---------------------------------------------------------------------------
+# Libero video-prompt subset selection via environment variable.
+#
+# Lets the training shell freely choose which libero suites to use WITHOUT
+# editing this file. Set env var LIBERO_VIDEO_PROMPT_EXCLUDE to a
+# comma-separated list of suite short-names to exclude, e.g.
+#     LIBERO_VIDEO_PROMPT_EXCLUDE=libero_10            # run spatial+object+goal
+#     LIBERO_VIDEO_PROMPT_EXCLUDE=libero_goal          # run spatial+object+10
+#     LIBERO_VIDEO_PROMPT_EXCLUDE=libero_spatial,libero_10   # run object+goal
+# When unset/empty, all 4 suites are used (default).
+#
+# This overrides the "libero_video_prompt" entry above at import time, so every
+# accelerate worker process picks up the same selection.
+# ---------------------------------------------------------------------------
+_LIBERO_VIDEO_PROMPT_ALL_SUBSETS = [
+    ("libero_spatial", "libero_mujoco3.3.2/libero_spatial_no_noops_1.0.0_lerobot"),
+    ("libero_object",  "libero_mujoco3.3.2/libero_object_no_noops_1.0.0_lerobot"),
+    ("libero_goal",    "libero_mujoco3.3.2/libero_goal_no_noops_1.0.0_lerobot"),
+    ("libero_10",      "libero_mujoco3.3.2/libero_10_no_noops_1.0.0_lerobot"),
+]
+
+_libero_exclude_raw = os.environ.get("LIBERO_VIDEO_PROMPT_EXCLUDE", "").strip()
+if _libero_exclude_raw:
+    _libero_excluded = {
+        s.strip() for s in _libero_exclude_raw.split(",") if s.strip()
+    }
+else:
+    _libero_excluded = set()
+
+_libero_selected = [
+    (path, 1.0, "libero_franka_video_prompt")
+    for short, path in _LIBERO_VIDEO_PROMPT_ALL_SUBSETS
+    if short not in _libero_excluded
+]
+if not _libero_selected:
+    # Fallback: if everything was excluded, keep all 4 (safer than empty training).
+    _libero_selected = [
+        (path, 1.0, "libero_franka_video_prompt")
+        for short, path in _LIBERO_VIDEO_PROMPT_ALL_SUBSETS
+    ]
+
+DATASET_NAMED_MIXTURES["libero_video_prompt"] = _libero_selected
+
+
+# ---------------------------------------------------------------------------
+# Libero normal (no video prompt) subset selection via environment variable.
+#
+# Same mechanism as the video-prompt selection above, but for the plain
+# "libero" mixture (robot_type="libero_franka" -> LeRobotSingleDataset).
+# Set env var LIBERO_EXCLUDE to a comma-separated list of suite short-names to
+# exclude, e.g.
+#     LIBERO_EXCLUDE=libero_10            # run spatial+object+goal
+#     LIBERO_EXCLUDE=libero_spatial,libero_10   # run object+goal
+# When unset/empty, all 4 suites are used (default).
+# ---------------------------------------------------------------------------
+_LIBERO_ALL_SUBSETS = _LIBERO_VIDEO_PROMPT_ALL_SUBSETS  # same 4 (short, path) pairs
+
+_libero_plain_exclude_raw = os.environ.get("LIBERO_EXCLUDE", "").strip()
+if _libero_plain_exclude_raw:
+    _libero_plain_excluded = {
+        s.strip() for s in _libero_plain_exclude_raw.split(",") if s.strip()
+    }
+else:
+    _libero_plain_excluded = set()
+
+_libero_plain_selected = [
+    (path, 1.0, "libero_franka")
+    for short, path in _LIBERO_ALL_SUBSETS
+    if short not in _libero_plain_excluded
+]
+if not _libero_plain_selected:
+    # Fallback: if everything was excluded, keep all 4 (safer than empty training).
+    _libero_plain_selected = [
+        (path, 1.0, "libero_franka")
+        for short, path in _LIBERO_ALL_SUBSETS
+    ]
+
+DATASET_NAMED_MIXTURES["libero"] = _libero_plain_selected
+

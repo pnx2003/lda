@@ -254,8 +254,54 @@ class TrainerUtils:
                 if dist.get_rank() == 0:
                     print("✅ loaded <full_model> model parameters")
                 loaded_modules = ["<full_model>"]
-            except Exception as e:
-                raise RuntimeError(f"❌ loading full model failed: {e}")
+            except RuntimeError as e:
+                # Handle size mismatches (e.g., max_num_embodiments changed)
+                # by padding or truncating category-specific dimensions
+                if "size mismatch" in str(e):
+                    if dist.get_rank() == 0:
+                        print(f"⚠️ size mismatch detected, attempting compatible load...")
+                    model_sd = model.state_dict()
+                    compatible_checkpoint = {}
+                    skipped_keys = []
+                    padded_keys = []
+
+                    for k, v in checkpoint.items():
+                        if k not in model_sd:
+                            # Key not in model — skip silently (strict=False behavior)
+                            continue
+                        model_shape = model_sd[k].shape
+                        if v.shape == model_shape:
+                            compatible_checkpoint[k] = v
+                        else:
+                            # Size mismatch — try to pad or truncate along dim 0
+                            # (typical for CategorySpecificLinear/MLP where dim0 = num_categories)
+                            if len(v.shape) == len(model_shape) and v.shape[1:] == model_shape[1:]:
+                                if model_shape[0] > v.shape[0]:
+                                    # Model has more categories → pad with zeros (or repeat last)
+                                    pad_size = model_shape[0] - v.shape[0]
+                                    pad = v[-1:].repeat(pad_size, *([1] * (v.dim() - 1)))
+                                    compatible_checkpoint[k] = torch.cat([v, pad], dim=0)
+                                    padded_keys.append(f"{k}: {v.shape} -> {model_shape} (padded)")
+                                else:
+                                    # Model has fewer categories → truncate
+                                    compatible_checkpoint[k] = v[:model_shape[0]]
+                                    padded_keys.append(f"{k}: {v.shape} -> {model_shape} (truncated)")
+                            else:
+                                # Incompatible shape — skip
+                                skipped_keys.append(f"{k}: checkpoint {v.shape} vs model {model_shape}")
+
+                    # Second pass: load compatible checkpoint
+                    missing, unexpected = model.load_state_dict(compatible_checkpoint, strict=False)
+
+                    if dist.get_rank() == 0:
+                        for msg in padded_keys:
+                            print(f"  🔧 padded/truncated: {msg}")
+                        for msg in skipped_keys:
+                            print(f"  ⚠️ skipped (incompatible shape): {msg}")
+                        print(f"✅ loaded <full_model> with compatible padding ({len(padded_keys)} keys adjusted)")
+                    loaded_modules = ["<full_model>"]
+                else:
+                    raise RuntimeError(f"❌ loading full model failed: {e}")
         return model
 
     @staticmethod

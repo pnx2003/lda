@@ -115,6 +115,10 @@ def pad_action_state_with_key(action_state: np.ndarray, action_key: str, single_
         max_length = 3
     elif "eef_rotation" in action_key:
         max_length = 3
+    elif "gripper_width" in action_key:
+        max_length = 6
+    elif "gripper" in action_key:
+        max_length = 1
     elif "arm" in action_key:
         max_length = 7
     elif "left_hand" in action_key:
@@ -123,9 +127,12 @@ def pad_action_state_with_key(action_state: np.ndarray, action_key: str, single_
         max_length = 6
     elif "waist" in action_key:
         max_length = 3
-    elif "gripper_width" in action_key:
-        max_length = 6
-    else: # mano hand 21*3 or gripper
+    elif action_key.rsplit(".", 1)[-1] in (
+        "x", "y", "z", "roll", "pitch", "yaw", "pad"
+    ):
+        # Libero-style per-coordinate subkeys: each is a single dim.
+        max_length = 1
+    else: # mano hand 21*3
         max_length = 63
     if isinstance(action_state, torch.Tensor):
         action_state = action_state.detach().cpu().numpy()
@@ -1684,6 +1691,262 @@ class LeRobotSingleDataset(Dataset):
         print(f"Used state keys (reordered): {list(used_state_keys)}")
 
 
+class VideoPromptLeRobotSingleDataset(LeRobotSingleDataset):
+    """
+    数据格式不变。
+    每次 __getitem__ 额外从同任务/同 language 的其他 episode 采 K 条 support videos。
+
+    prompt_mode (eval 用):
+      - "correct"      : 同 language 的其他 episode (默认，等同 wrong_prompt_prob=0)
+      - "none"         : 不给 support video
+      - "wrong"        : 不同 language 的 episode
+      - "shuffled"     : correct prompt 但帧顺序打乱
+      - "final_frame"  : 每条 support demo 只重复最后一帧
+    """
+
+    VALID_PROMPT_MODES = ("correct", "none", "wrong", "shuffled", "final_frame")
+
+    def __init__(
+        self,
+        *args,
+        num_support_demos: int = 2,
+        num_support_frames: int = 4,
+        wrong_prompt_prob: float = 0.0,
+        prompt_mode: str = "correct",
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.num_support_demos = num_support_demos
+        self.num_support_frames = num_support_frames
+        self.wrong_prompt_prob = wrong_prompt_prob
+
+        # Eval-time deterministic prompt mode (overrides wrong_prompt_prob)
+        assert prompt_mode in self.VALID_PROMPT_MODES, \
+            f"prompt_mode must be one of {self.VALID_PROMPT_MODES}, got '{prompt_mode}'"
+        self.prompt_mode = prompt_mode
+
+        self.episode_to_steps = self._build_episode_to_steps()
+        self.episode_to_language = self._build_episode_to_language()
+        self.language_to_episodes = self._build_language_to_episodes()
+
+    def _build_episode_to_steps(self):
+        episode_to_steps = defaultdict(list)
+        for traj_id, base_index in self.all_steps:
+            episode_to_steps[traj_id].append(base_index)
+        return dict(episode_to_steps)
+
+    def _build_episode_to_language(self):
+        """Map every trajectory id -> its language/task string.
+
+        Fast implementation. The original called `get_step_data` for every
+        episode, which decodes video frames (incl. future_video) —
+        prohibitively slow on large datasets like droid (92k episodes).
+
+        Preferred path: read the per-episode task string from
+        `meta/episodes.jsonl` (one file, instant). Falls back to reading only
+        the `task_index` parquet column per episode, then to the full
+        `get_step_data` (video decode) only on hard failure.
+        """
+        ep_to_lang = {}
+        lang_key = self.modality_keys["language"][0]
+
+        # Resolve the original parquet column holding the task index.
+        original_key = None
+        if lang_key.startswith("annotation."):
+            subkey = lang_key.replace("annotation.", "")
+            annotation_meta = self.lerobot_modality_meta.annotation
+            if annotation_meta is not None and subkey in annotation_meta:
+                original_key = annotation_meta[subkey].original_key or lang_key
+        if original_key is None:
+            original_key = "task_index"
+
+        # --- Preferred: episodes.jsonl (one-shot read) ---
+        episodes_path = self.dataset_path / LE_ROBOT_EPISODE_FILENAME
+        episodes_lang = None
+        if episodes_path.exists():
+            try:
+                episodes_lang = {}
+                with open(episodes_path, "r") as f:
+                    for line in f:
+                        ep = json.loads(line)
+                        ei = ep["episode_index"]
+                        tasks = ep.get("tasks", [])
+                        lang = tasks[0] if tasks else ""
+                        if isinstance(lang, bytes):
+                            lang = lang.decode("utf-8")
+                        episodes_lang[ei] = str(lang)
+            except Exception:
+                episodes_lang = None
+
+        for traj_id, steps in self.episode_to_steps.items():
+            lang = None
+            if episodes_lang is not None and traj_id in episodes_lang:
+                lang = episodes_lang[traj_id]
+            else:
+                # Fallback A: read only the task_index column from parquet.
+                try:
+                    chunk_index = self.get_episode_chunk(traj_id)
+                    parquet_path = self.dataset_path / self.data_path_pattern.format(
+                        episode_chunk=chunk_index, episode_index=traj_id
+                    )
+                    task_idx = pd.read_parquet(parquet_path, columns=[original_key])[original_key].iloc[steps[0]]
+                    task_idx = task_idx.item() if hasattr(task_idx, "item") else task_idx
+                    t = self.tasks.loc[task_idx]["task"]
+                    lang = t.iloc[0] if hasattr(t, "iloc") else t
+                except Exception:
+                    # Fallback B: full step read (decodes video) — last resort.
+                    data = self.get_step_data(traj_id, steps[0])
+                    lang = data[lang_key][0]
+            if isinstance(lang, bytes):
+                lang = lang.decode("utf-8")
+            ep_to_lang[traj_id] = str(lang)
+
+        # Reset cached trajectory data so the first real __getitem__ reloads it.
+        self.curr_traj_data = None
+        self.curr_traj_id = None
+        return ep_to_lang
+
+    def _build_language_to_episodes(self):
+        lang_to_eps = defaultdict(list)
+        for ep, lang in self.episode_to_language.items():
+            lang_to_eps[lang].append(ep)
+        return dict(lang_to_eps)
+
+    def _sample_support_episodes(self, query_ep, query_lang):
+        """Sample support episodes based on prompt_mode (eval) or wrong_prompt_prob (train)."""
+        # Determine whether to use wrong prompt
+        if self.prompt_mode == "none":
+            # No support needed at all
+            return [], True
+
+        use_wrong = False
+        if self.prompt_mode == "wrong":
+            use_wrong = True
+        elif self.prompt_mode in ("correct", "shuffled", "final_frame"):
+            use_wrong = False
+        else:
+            # Training mode: use wrong_prompt_prob
+            use_wrong = random.random() < self.wrong_prompt_prob
+
+        if use_wrong:
+            other_langs = [l for l in self.language_to_episodes if l != query_lang]
+            if len(other_langs) > 0:
+                candidates = self.language_to_episodes[random.choice(other_langs)]
+            else:
+                candidates = self.language_to_episodes[query_lang]
+        else:
+            candidates = self.language_to_episodes.get(query_lang, [])
+
+        candidates = [ep for ep in candidates if ep != query_ep]
+
+        if len(candidates) == 0:
+            candidates = list(self.episode_to_steps.keys())
+
+        if len(candidates) >= self.num_support_demos:
+            return random.sample(candidates, self.num_support_demos), not use_wrong
+
+        return random.choices(candidates, k=self.num_support_demos), not use_wrong
+
+    def _load_support_video(self, ep_id):
+        steps = sorted(self.episode_to_steps[ep_id])
+
+        if len(steps) >= self.num_support_frames:
+            idxs = np.linspace(0, len(steps) - 1, self.num_support_frames).astype(int)
+            sampled_steps = [steps[i] for i in idxs]
+        else:
+            sampled_steps = steps + [steps[-1]] * (self.num_support_frames - len(steps))
+
+        video = []
+        for base_index in sampled_steps:
+            data = self.get_step_data(ep_id, base_index)
+
+            views = []
+            for video_key in self.modality_keys["video"]:
+                img = Image.fromarray(data[video_key][0]).resize((224, 224))
+                views.append(img)
+
+            video.append(views)
+
+        return video
+
+    def _shuffle_video_frames(self, support_videos):
+        """Shuffle the temporal order of frames within each support demo.
+
+        Args:
+            support_videos: List[K][T][V] of PIL.Image
+
+        Returns:
+            Same structure but with frame order shuffled per demo.
+        """
+        out = []
+        for demo in support_videos:
+            demo = list(demo)
+            random.shuffle(demo)
+            out.append(demo)
+        return out
+
+    def _make_final_frame_prompt(self, support_videos):
+        """Replace each support demo with the last frame repeated T times.
+
+        This tests whether the model uses the full video dynamics or just
+        the goal state image.
+
+        Args:
+            support_videos: List[K][T][V] of PIL.Image
+
+        Returns:
+            Same structure but each demo only contains the last frame repeated.
+        """
+        out = []
+        for demo in support_videos:
+            last_frame = demo[-1]
+            out.append([last_frame for _ in range(len(demo))])
+        return out
+
+    def __getitem__(self, index: int) -> dict:
+        query_ep, _ = self.all_steps[index]
+
+        sample = super().__getitem__(index)
+
+        if "lang" not in sample:
+            sample["lang"] = sample.get("language", "")
+
+        query_lang = sample["lang"]
+
+        # "none" mode: no support videos at all
+        if self.prompt_mode == "none":
+            sample["support_videos"] = None
+            sample["support_episode_ids"] = []
+            sample["query_episode_id"] = query_ep
+            sample["prompt_is_correct"] = True
+            sample["prompt_mode"] = self.prompt_mode
+            return sample
+
+        support_eps, prompt_is_correct = self._sample_support_episodes(
+            query_ep=query_ep,
+            query_lang=query_lang,
+        )
+
+        support_videos = [
+            self._load_support_video(ep)
+            for ep in support_eps
+        ]
+
+        # Apply prompt-mode transforms after loading
+        if self.prompt_mode == "shuffled":
+            support_videos = self._shuffle_video_frames(support_videos)
+        elif self.prompt_mode == "final_frame":
+            support_videos = self._make_final_frame_prompt(support_videos)
+
+        sample["support_videos"] = support_videos
+        sample["support_episode_ids"] = support_eps
+        sample["query_episode_id"] = query_ep
+        sample["prompt_is_correct"] = prompt_is_correct
+        sample["prompt_mode"] = self.prompt_mode
+
+        return sample
+
+
 class CachedLeRobotSingleDataset(LeRobotSingleDataset):
     def __init__(self, img_resize: tuple[int, int] | None = None, *args, **kwargs):
         """
@@ -2376,11 +2639,45 @@ class LeRobotMixtureDataset(Dataset):
                     else:
                         state = np.zeros((1, 1), dtype=np.float32)
                     # prim_images
-                    return dict(action=action, history_action=history_action, action_mask=action_mask, image=all_images, 
+                    result = dict(action=action, history_action=history_action, action_mask=action_mask, image=all_images,
                     future_image=future_all_images, lang=language, state=state, embodiment_id=embodiment_tag, assigned_task=assigned_task)
 
-                return dict(action=action, history_action=history_action, action_mask=action_mask, image=all_images, future_image=future_all_images, 
+                else:
+                    result = dict(action=action, history_action=history_action, action_mask=action_mask, image=all_images, future_image=future_all_images,
                     lang=language, embodiment_id=embodiment_tag, assigned_task=assigned_task)
+
+                # Video prompt: if the sub-dataset supports video prompt, sample support videos
+                if isinstance(dataset, VideoPromptLeRobotSingleDataset):
+                    query_ep = trajectory_id
+                    query_lang = str(language)
+                    prompt_mode = dataset.prompt_mode
+
+                    # "none" mode: skip support video entirely
+                    if prompt_mode == "none":
+                        result["support_videos"] = None
+                        result["support_episode_ids"] = []
+                        result["query_episode_id"] = query_ep
+                        result["prompt_is_correct"] = True
+                        result["prompt_mode"] = prompt_mode
+                    else:
+                        support_eps, prompt_is_correct = dataset._sample_support_episodes(
+                            query_ep=query_ep, query_lang=query_lang,
+                        )
+                        support_videos = [dataset._load_support_video(ep) for ep in support_eps]
+
+                        # Apply prompt-mode transforms
+                        if prompt_mode == "shuffled":
+                            support_videos = dataset._shuffle_video_frames(support_videos)
+                        elif prompt_mode == "final_frame":
+                            support_videos = dataset._make_final_frame_prompt(support_videos)
+
+                        result["support_videos"] = support_videos
+                        result["support_episode_ids"] = support_eps
+                        result["query_episode_id"] = query_ep
+                        result["prompt_is_correct"] = prompt_is_correct
+                        result["prompt_mode"] = prompt_mode
+
+                return result
                 
             except Exception as e:
                 last_exception = e
@@ -2654,7 +2951,7 @@ class LeRobotMixtureDataset(Dataset):
                 print(f"Failed to load cached statistics: {e}")
                 print("Falling back to computing statistics from scratch...")
 
-        self.tag = EmbodimentTag.NEW_EMBODIMENT.value
+        self.tag = EmbodimentTag.FRANKA.value
         self.merged_metadata: dict[str, DatasetMetadata] = {}
         # Group metadata by tag
         all_metadatas: dict[str, list[DatasetMetadata]] = {}

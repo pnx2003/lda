@@ -26,11 +26,14 @@ except NameError:
 
 # Auto-import all framework submodules to trigger registration
 if pkg_path is not None:
-    try:
-        for _, module_name, _ in pkgutil.iter_modules(pkg_path):
+    for _, module_name, _ in pkgutil.iter_modules(pkg_path):
+        try:
             importlib.import_module(f"{__name__}.{module_name}")
-    except Exception as e:
-        logger.log(f"Warning: Failed to auto-import framework submodules: {e}")
+        except Exception as e:
+            # Per-module tolerance: a broken framework submodule must not block
+            # the others (or the eval) from registering. logger is a PureOverwatch
+            # which has warning/info/error but no `log`.
+            logger.warning(f"Warning: Failed to auto-import framework submodule {module_name!r}: {e}")
         
 def build_framework(cfg):
     """

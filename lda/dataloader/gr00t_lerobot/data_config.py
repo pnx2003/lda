@@ -766,7 +766,7 @@ class DemoDataConfig:
         "action.gripper_width",
     ]
     language_keys = ["annotation.human.action.task_description"]
-    observation_indices = [0]
+    observation_indices = [-1, 0]
     future_observation_indices = [5]
     action_indices = list(range(0, 16))
 
@@ -837,6 +837,229 @@ class DemoDataConfig:
         ]
         return ComposedModalityTransform(transforms=transforms)
 
+# Video Prompt DataConfig classes
+class FrankaVideoPromptDataConfig(FrankaDataConfig):
+    use_video_prompt = True
+    num_support_demos = 2
+    num_support_frames = 4
+    wrong_prompt_prob = 0.0
+    prompt_mode = "correct"
+
+
+class InternFrankaVideoPromptDataConfig(FrankaDataConfig):
+    use_video_prompt = True
+    num_support_demos = 2
+    num_support_frames = 4
+    wrong_prompt_prob = 0.0
+    prompt_mode = "correct"
+
+
+class FourierGr1VideoPromptDataConfig(FourierGr1ArmsWaistDataConfig):
+    use_video_prompt = True
+    num_support_demos = 2
+    num_support_frames = 4
+    wrong_prompt_prob = 0.0
+    prompt_mode = "correct"
+
+
+class AgibotVideoPromptDataConfig(AgibotWorldDataConfig):
+    use_video_prompt = True
+    num_support_demos = 2
+    num_support_frames = 4
+    wrong_prompt_prob = 0.0
+    prompt_mode = "correct"
+
+
+class DroidVideoPromptDataConfig(DroidDataConfig):
+    use_video_prompt = True
+    num_support_demos = 2
+    num_support_frames = 4
+    wrong_prompt_prob = 0.0
+    prompt_mode = "correct"
+
+
+class DroidFrankaDataConfig:
+    """DataConfig matching the actual droid_dataset modality.json: single-arm Franka, state=8, action=7."""
+    video_backend = "torchvision_av"
+    video_keys = ["video.exterior_1"]
+    future_video_keys = [
+        "future_video.exterior_1"
+    ]
+    state_keys = [
+        "state.eef_position",
+        "state.eef_rotation",
+        "state.gripper",
+    ]
+    action_keys = [
+        "action.eef_position",
+        "action.eef_rotation",
+        "action.gripper",
+    ]
+    language_keys = ["annotation.language"]
+    observation_indices = [-5, 0]
+    future_observation_indices = [5]
+    history_action_indices = list(range(-5, 0))
+    action_indices = list(range(-5, 17))
+    img_interval = 3
+
+    def modality_config(self):
+        video_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.video_keys,
+        )
+        future_video_modality = ModalityConfig(
+            delta_indices=self.future_observation_indices,
+            modality_keys=self.future_video_keys,
+        )
+        state_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.state_keys,
+        )
+        action_modality = ModalityConfig(
+            delta_indices=self.action_indices,
+            modality_keys=self.action_keys,
+        )
+        language_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.language_keys,
+        )
+        modality_configs = {
+            "video": video_modality,
+            "state": state_modality,
+            "action": action_modality,
+            "language": language_modality,
+            "future_video": future_video_modality,
+        }
+        return modality_configs
+
+    def transform(self) -> ModalityTransform:
+        transforms = [
+            StateActionToTensor(apply_to=self.state_keys),
+            StateActionTransform(
+                apply_to=self.state_keys,
+                normalization_modes={key: "q99" for key in self.state_keys},
+            ),
+            StateActionToTensor(apply_to=self.action_keys),
+            StateActionTransform(
+                apply_to=self.action_keys,
+                normalization_modes={key: "q99" for key in self.action_keys},
+            ),
+        ]
+        return ComposedModalityTransform(transforms=transforms)
+
+
+class DroidFrankaVideoPromptDataConfig(DroidFrankaDataConfig):
+    use_video_prompt = True
+    num_support_demos = 2
+    num_support_frames = 4
+    wrong_prompt_prob = 0.0
+    prompt_mode = "correct"
+
+
+class DemoVideoPromptDataConfig(DemoDataConfig):
+    use_video_prompt = True
+    num_support_demos = 2
+    num_support_frames = 4
+    wrong_prompt_prob = 0.0
+    prompt_mode = "correct"
+
+
+class LiberoFrankaDataConfig:
+    """DataConfig for libero mujoco lerobot datasets: single-arm Franka, state=8, action=7.
+
+    The libero modality.json uses subkeys x/y/z/roll/pitch/yaw/pad/gripper for state
+    and x/y/z/roll/pitch/yaw/gripper for action. original_key defaults to
+    'observation.state' / 'action' via the pydantic schema, matching the parquet
+    columns. The `pad` dim (state index 6) is dropped as it is unused padding,
+    giving state_dim=7.
+    """
+    video_backend = "torchvision_av"
+    video_keys = ["video.primary_image", "video.wrist_image"]
+    future_video_keys = ["future_video.primary_image", "future_video.wrist_image"]
+    state_keys = [
+        "state.x",
+        "state.y",
+        "state.z",
+        "state.roll",
+        "state.pitch",
+        "state.yaw",
+        "state.gripper",
+    ]
+    action_keys = [
+        "action.x",
+        "action.y",
+        "action.z",
+        "action.roll",
+        "action.pitch",
+        "action.yaw",
+        "action.gripper",
+    ]
+    language_keys = ["annotation.human.action.task_description"]
+    observation_indices = [-2, 0]
+    future_observation_indices = [16]
+    history_action_indices = list(range(-2, 0))
+    # action_indices must cover history + future_action_window_size+1 steps.
+    # The mixture __getitem__ slices off the first `len(history_action_indices)` (=2)
+    # steps as history_action, leaving the rest as the action target. The model then
+    # takes the last (future_action_window_size+1)=16 steps. So we need >= 18 raw
+    # steps -> range(-2, 16) = 18 steps, sliced to 16, matching action_horizon=16.
+    action_indices = list(range(-2, 16))
+    img_interval = 1
+
+    def modality_config(self):
+        video_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.video_keys,
+        )
+        future_video_modality = ModalityConfig(
+            delta_indices=self.future_observation_indices,
+            modality_keys=self.future_video_keys,
+        )
+        state_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.state_keys,
+        )
+        action_modality = ModalityConfig(
+            delta_indices=self.action_indices,
+            modality_keys=self.action_keys,
+        )
+        language_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.language_keys,
+        )
+        modality_configs = {
+            "video": video_modality,
+            "state": state_modality,
+            "action": action_modality,
+            "language": language_modality,
+            "future_video": future_video_modality,
+        }
+        return modality_configs
+
+    def transform(self) -> ModalityTransform:
+        transforms = [
+            StateActionToTensor(apply_to=self.state_keys),
+            StateActionTransform(
+                apply_to=self.state_keys,
+                normalization_modes={key: "q99" for key in self.state_keys},
+            ),
+            StateActionToTensor(apply_to=self.action_keys),
+            StateActionTransform(
+                apply_to=self.action_keys,
+                normalization_modes={key: "q99" for key in self.action_keys},
+            ),
+        ]
+        return ComposedModalityTransform(transforms=transforms)
+
+
+class LiberoFrankaVideoPromptDataConfig(LiberoFrankaDataConfig):
+    use_video_prompt = True
+    num_support_demos = 2
+    num_support_frames = 4
+    wrong_prompt_prob = 0.0
+    prompt_mode = "correct"
+
+
 ROBOT_TYPE_CONFIG_MAP = {
     "fourier_gr1_arms_waist": FourierGr1ArmsWaistDataConfig(),
     "fourier_gr1_eef": FourierGr1EEFDataConfig(),
@@ -877,4 +1100,16 @@ ROBOT_TYPE_CONFIG_MAP = {
     "rh20t": RH20TDataConfig(),
 
     "demo_data": DemoDataConfig(),
+
+    # Video prompt configs
+    "intern_franka_video_prompt": InternFrankaVideoPromptDataConfig(),
+    "franka_video_prompt": FrankaVideoPromptDataConfig(),
+    "fourier_gr1_video_prompt": FourierGr1VideoPromptDataConfig(),
+    "agibot_video_prompt": AgibotVideoPromptDataConfig(),
+    "droid_video_prompt": DroidVideoPromptDataConfig(),
+    "droid_franka": DroidFrankaDataConfig(),
+    "droid_franka_video_prompt": DroidFrankaVideoPromptDataConfig(),
+    "demo_video_prompt": DemoVideoPromptDataConfig(),
+    "libero_franka": LiberoFrankaDataConfig(),
+    "libero_franka_video_prompt": LiberoFrankaVideoPromptDataConfig(),
 }

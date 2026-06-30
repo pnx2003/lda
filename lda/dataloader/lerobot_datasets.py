@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Sequence
 from omegaconf import OmegaConf
 
-from lda.dataloader.gr00t_lerobot.datasets import LeRobotSingleDataset, LeRobotMixtureDataset
+from lda.dataloader.gr00t_lerobot.datasets import LeRobotSingleDataset, LeRobotMixtureDataset, VideoPromptLeRobotSingleDataset
 from lda.dataloader.gr00t_lerobot.video_gen_datasets import VideoTaskSingleDataset
 from lda.dataloader.gr00t_lerobot.mixtures import get_dataset_mixtures
 from lda.dataloader.gr00t_lerobot.data_config import ROBOT_TYPE_CONFIG_MAP
@@ -104,8 +104,8 @@ def make_LeRobotSingleDataset(
     transforms = data_config.transform()
     dataset_path = data_root_dir / data_name
     if robot_type not in ROBOT_TYPE_TO_EMBODIMENT_TAG:
-        print(f"Warning: Robot type {robot_type} not found in ROBOT_TYPE_TO_EMBODIMENT_TAG, using {EmbodimentTag.NEW_EMBODIMENT} as default")
-        embodiment_tag = EmbodimentTag.NEW_EMBODIMENT
+        print(f"Warning: Robot type {robot_type} not found in ROBOT_TYPE_TO_EMBODIMENT_TAG, using {EmbodimentTag.FRANKA} as default")
+        embodiment_tag = EmbodimentTag.FRANKA
     else:
         embodiment_tag = ROBOT_TYPE_TO_EMBODIMENT_TAG[robot_type]
     if hasattr(data_config, "video_backend"):
@@ -131,6 +131,28 @@ def make_LeRobotSingleDataset(
             transforms=transforms,
             history_action_indices=history_action_indices,
             metadata_cache_path="/mnt/project/world_model/data/HumanData/Egocentric-10K/metadata.pkl"
+        )
+    elif hasattr(data_config, "use_video_prompt") and data_config.use_video_prompt:
+        num_support_demos = getattr(data_config, "num_support_demos", 2)
+        num_support_frames = getattr(data_config, "num_support_frames", 4)
+        wrong_prompt_prob = getattr(data_config, "wrong_prompt_prob", 0.0)
+        prompt_mode = getattr(data_config, "prompt_mode", "correct")
+        print(f"🎬 Video prompt enabled: K={num_support_demos}, T={num_support_frames}, wrong_prob={wrong_prompt_prob}, prompt_mode={prompt_mode}")
+        return VideoPromptLeRobotSingleDataset(
+            dataset_path=dataset_path,
+            modality_configs=modality_config,
+            transforms=transforms,
+            embodiment_tag=embodiment_tag,
+            video_backend=video_backend,
+            delete_pause_frame=delete_pause_frame,
+            data_cfg=data_cfg,
+            img_interval=img_interval,
+            history_action_indices=history_action_indices,
+            CoT_prompt=CoT_prompt,
+            num_support_demos=num_support_demos,
+            num_support_frames=num_support_frames,
+            wrong_prompt_prob=wrong_prompt_prob,
+            prompt_mode=prompt_mode,
         )
     else:
         return LeRobotSingleDataset(

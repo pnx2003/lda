@@ -27,11 +27,6 @@ class EmbodimentTag(Enum):
     The AgiBot Genie-1 with gripper dataset.
     """
 
-    NEW_EMBODIMENT = "new_embodiment"
-    """
-    Any new embodiment for finetuning.
-    """
-
     FRANKA = 'franka'
     """
     The Franka Emika Panda robot.
@@ -159,13 +154,10 @@ EMBODIMENT_TAG_MAPPING = {
     EmbodimentTag.EGOVLA.value: 29,
     EmbodimentTag.FRANKA_DUAL.value: 30,
     EmbodimentTag.RH20T.value: 31,
-
-    EmbodimentTag.NEW_EMBODIMENT.value: 32,
 }
 
 # Robot type to embodiment tag mapping
 ROBOT_TYPE_TO_EMBODIMENT_TAG = {
-    "custom_robot_config": EmbodimentTag.NEW_EMBODIMENT,
     "fourier_gr1_arms_waist": EmbodimentTag.GR1,
     "fourier_gr1_eef": EmbodimentTag.GR1,
     "fourier_gr1_arms_waist_twohistory": EmbodimentTag.GR1,
@@ -207,6 +199,10 @@ ROBOT_TYPE_TO_EMBODIMENT_TAG = {
     "unitree_g1": EmbodimentTag.Unitree,
     "galbot_sharpa": EmbodimentTag.GALBOT,
 
-    "demo_data": EmbodimentTag.NEW_EMBODIMENT,
-    
+    "demo_data": EmbodimentTag.FRANKA,
+    "demo_video_prompt": EmbodimentTag.FRANKA,
+    "droid_franka": EmbodimentTag.Droid,
+    "droid_franka_video_prompt": EmbodimentTag.Droid,
+    "libero_franka": EmbodimentTag.FRANKA,
+    "libero_franka_video_prompt": EmbodimentTag.FRANKA,
 }

@@ -71,6 +71,41 @@ class QwenUWM(baseframework):
         self.future_action_window_size = config.framework.action_model.future_action_window_size
         self.past_action_window_size = config.framework.action_model.past_action_window_size
         self.chunk_len = self.past_action_window_size + 1 + self.future_action_window_size
+
+    def _support_videos_to_numpy(self, support_videos):
+        """
+        support_videos: List[B][K][T][V] of PIL.Image
+        return: np.ndarray [B, K, T, V, C, H, W]
+        """
+        batch = []
+
+        for sample_support in support_videos:
+            demos = []
+
+            for demo in sample_support:
+                frames = []
+
+                for frame in demo:
+                    views = []
+
+                    for img in frame:
+                        if not isinstance(img, Image.Image):
+                            img = Image.fromarray(img)
+
+                        img = img.resize((224, 224))
+                        arr = np.asarray(img)
+
+                        # [H, W, C] -> [C, H, W]
+                        arr = arr.transpose(2, 0, 1)
+                        views.append(arr)
+
+                    frames.append(views)
+
+                demos.append(frames)
+
+            batch.append(demos)
+
+        return np.asarray(batch)
         
 
     def forward(
@@ -84,13 +119,26 @@ class QwenUWM(baseframework):
         instructions = [example["lang"] for example in examples]  # [B, str]
         actions = [example["action"] for example in examples]  # label [B， len, action_dim]
         history_actions = [example['history_action'] for example in examples] if examples[0]['history_action'] is not None else None
-        # actions_mask = [example["action_mask"] for example in examples]
+        actions_mask = [example["action_mask"] for example in examples]
         batch_future_images = [example["future_image"] for example in examples]  # [B，[PLT]]
         curr_images = np.array(batch_images).transpose(0, 1, 4, 2, 3)
         future_images = np.array(batch_future_images).transpose(0, 1, 4, 2, 3)
         tasks = [example["assigned_task"] for example in examples]
         state = [example["state"] for example in examples] if "state" in examples[0] else None  # [B, 1, state_dim]
         embodiment_ids = [example["embodiment_id"] for example in examples]
+
+        # 提取 support_videos（如果存在）
+        support_videos = (
+            [example.get("support_videos", None) for example in examples]
+            if "support_videos" in examples[0]
+            else None
+        )
+
+        # 处理 support_imgs
+        support_imgs = None
+        if support_videos is not None and support_videos[0] is not None:
+            support_imgs = self._support_videos_to_numpy(support_videos)
+
         # actions = examples['action']
         # actions_mask = examples['action_mask']
         # curr_images = examples['image'].permute(0, 1, 4, 2, 3)
@@ -137,19 +185,19 @@ class QwenUWM(baseframework):
             actions = torch.from_numpy(np.array(actions)).to(last_hidden.device, dtype=last_hidden.dtype) # [B, T_full, action_dim]
             actions_target = actions[:, -(self.future_action_window_size+1):, :]  # (B, chunk_len, action_dim)
 
-            # actions_mask = actions_mask.to(last_hidden.device, dtype=last_hidden.dtype)
-            # actions_target_mask = actions_mask[:, -(self.future_action_window_size+1):, :]
+            actions_mask = torch.from_numpy(np.array(actions_mask)).to(last_hidden.device, dtype=last_hidden.dtype)
+            actions_target_mask = actions_mask[:, -(self.future_action_window_size+1):, :]
             repeated_diffusion_steps = (
                 self.config.trainer.get("repeated_diffusion_steps", 4) if self.config and self.config.trainer else 4
             )
             actions_target_repeated = actions_target.repeat(repeated_diffusion_steps, 1, 1)
-            # actions_target_mask_repeated = actions_target_mask.repeat(repeated_diffusion_steps, 1, 1)
+            actions_target_mask_repeated = actions_target_mask.repeat(repeated_diffusion_steps, 1, 1)
 
             history_actions_repeated = None
             if history_actions is not None:
                 history_actions = torch.from_numpy(np.array(history_actions)).to(last_hidden.device, dtype=last_hidden.dtype)
                 history_actions_repeated = history_actions.repeat(repeated_diffusion_steps, 1, 1)
-            
+
             last_hidden_repeated = last_hidden.repeat(repeated_diffusion_steps, 1, 1)
             # last_hidden_repeated = last_hidden
 
@@ -161,6 +209,17 @@ class QwenUWM(baseframework):
 
             curr_images_repeated = torch.from_numpy(curr_images).to(last_hidden.device, dtype=last_hidden.dtype).repeat(repeated_diffusion_steps, 1, 1, 1, 1)
             future_images_repeated = torch.from_numpy(future_images).to(last_hidden.device, dtype=last_hidden.dtype).repeat(repeated_diffusion_steps, 1, 1, 1, 1)
+
+            # 处理 support_imgs tensor
+            support_imgs_repeated = None
+            if support_imgs is not None:
+                support_imgs = torch.as_tensor(
+                    support_imgs,
+                    device=last_hidden.device,
+                    dtype=last_hidden.dtype,
+                )
+                support_imgs_repeated = support_imgs.repeat(repeated_diffusion_steps, 1, 1, 1, 1, 1, 1)
+
             tasks = tasks * repeated_diffusion_steps
             state_repeated = None
             if state is not None:
@@ -168,13 +227,15 @@ class QwenUWM(baseframework):
                 state_repeated = state.repeat(repeated_diffusion_steps, 1, 1)
             # embodiment_id_repeated = embodiment_id.to(last_hidden.device).repeat(repeated_diffusion_steps)
             output_dict = self.action_model(
-                vl_embs=last_hidden_repeated, 
-                actions=actions_target_repeated, 
+                vl_embs=last_hidden_repeated,
+                actions=actions_target_repeated,
+                action_mask=actions_target_mask_repeated,
                 history_actions=history_actions_repeated,
-                state=state_repeated, 
-                future_imgs=future_images_repeated, 
-                curr_imgs=curr_images_repeated, 
-                embodiment_id=embodiment_ids_repeated, 
+                state=state_repeated,
+                future_imgs=future_images_repeated,
+                curr_imgs=curr_images_repeated,
+                support_imgs=support_imgs_repeated,
+                embodiment_id=embodiment_ids_repeated,
                 encoder_attention_mask=attention_mask_repeated)  # (B, chunk_len, action_dim)
 
         return output_dict
@@ -210,13 +271,26 @@ class QwenUWM(baseframework):
         curr_imgs = torch.from_numpy(np.array([example["image"] for example in examples]))
         batch_images = [to_pil_preserve(example["image"]) for example in examples]  #  [B，[PLT]]
         instructions = [example["lang"] for example in examples]  # [B, str]
-    
+
         state = [example["state"] for example in examples] if "state" in examples[0] else None  # [B, 1, state_dim]
         embodiment_ids = [example["embodiment_id"] for example in examples]
         if 'history_action' in examples[0] and examples[0]['history_action'] is not None:
             history_actions = [example['history_action'] for example in examples]
         else:
             history_actions = None
+
+        # 提取 support_videos（如果存在）
+        support_videos = (
+            [example.get("support_videos", None) for example in examples]
+            if "support_videos" in examples[0]
+            else None
+        )
+
+        # 处理 support_imgs
+        support_imgs = None
+        if support_videos is not None and support_videos[0] is not None:
+            support_imgs = self._support_videos_to_numpy(support_videos)
+
         train_obs_image_size = getattr(self.config.datasets.vla_data, "image_size", None)
         if train_obs_image_size:
             batch_images = resize_images(batch_images, target_size=train_obs_image_size)
@@ -235,7 +309,7 @@ class QwenUWM(baseframework):
         #         "attention_mask": examples['vlm_attention_mask'].to(self.qwen_vl_interface.model.device),
         #         "pixel_values": examples['vlm_pixel_values'].to(self.qwen_vl_interface.model.device),
         #     }
-        
+
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
         attention_mask = qwen_inputs['attention_mask']
         with torch.autocast("cuda", dtype=torch.bfloat16):
@@ -254,9 +328,26 @@ class QwenUWM(baseframework):
         # state = examples['state'].to(last_hidden.device, dtype=last_hidden.dtype) if 'state' in examples else None
         curr_imgs = curr_imgs.to(last_hidden.device, dtype=last_hidden.dtype)
         attention_mask = attention_mask.to(last_hidden.device, dtype=last_hidden.dtype)
+
+        # 处理 support_imgs tensor
+        support_imgs_tensor = None
+        if support_imgs is not None:
+            support_imgs_tensor = torch.as_tensor(
+                support_imgs,
+                device=last_hidden.device,
+                dtype=last_hidden.dtype,
+            )
+
         # Step 4: Action Expert Forward and Loss
         with torch.autocast("cuda", dtype=torch.float32):
-            pred_actions = self.action_model.predict_action(last_hidden, state, curr_imgs, embodiment_ids, attention_mask)  # (B, chunk_len, action_dim)
+            pred_actions = self.action_model.predict_action(
+                vl_embs=last_hidden,
+                state=state,
+                curr_imgs=curr_imgs,
+                support_imgs=support_imgs_tensor,
+                embodiment_id=embodiment_ids,
+                encoder_attention_mask=attention_mask
+            )  # (B, chunk_len, action_dim)
 
         normalized_actions = pred_actions.detach().cpu().float().numpy()
         return {"normalized_actions": normalized_actions}

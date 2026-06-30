@@ -102,7 +102,7 @@ def main():
     parser.add_argument(
         "--config_yaml",
         type=str,
-        default="/mnt/home/liukai/code/LDA/lda/config/training/LDA_pretrain.yaml",
+        default="lda/config/training/LDA_pretrain.yaml",
         help="Path to YAML config",
     )
     parser.add_argument("--num_batches", type=int, default=3, help="How many batches to inspect")
